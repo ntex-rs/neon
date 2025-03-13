@@ -1,5 +1,5 @@
 use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
-use std::{fmt, time::Duration};
+use std::{fmt, thread, time::Duration};
 
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 
@@ -24,7 +24,7 @@ impl<T> fmt::Debug for DispatchError<T> {
 
 impl<T> fmt::Display for DispatchError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        "all threads are busy".fmt(f)
+        "All threads are busy".fmt(f)
     }
 }
 
@@ -73,7 +73,7 @@ fn worker(
 
 /// A thread pool to perform blocking operations in other threads.
 #[derive(Debug, Clone)]
-pub struct AsyncifyPool {
+pub struct ThreadPool {
     sender: Sender<BoxedDispatchable>,
     receiver: Receiver<BoxedDispatchable>,
     counter: Arc<AtomicUsize>,
@@ -81,17 +81,17 @@ pub struct AsyncifyPool {
     recv_timeout: Duration,
 }
 
-impl AsyncifyPool {
-    /// Create [`AsyncifyPool`] with thread number limit and channel receive
+impl ThreadPool {
+    /// Create [`ThreadPool`] with thread number limit and channel receive
     /// timeout.
     pub fn new(thread_limit: usize, recv_timeout: Duration) -> Self {
         let (sender, receiver) = bounded(0);
         Self {
             sender,
             receiver,
-            counter: Arc::new(AtomicUsize::new(0)),
             thread_limit,
             recv_timeout,
+            counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -110,7 +110,7 @@ impl AsyncifyPool {
                             Box::from_raw(Box::into_raw(f).cast())
                         }))
                     } else {
-                        std::thread::spawn(worker(
+                        thread::spawn(worker(
                             self.receiver.clone(),
                             self.counter.clone(),
                             self.recv_timeout,

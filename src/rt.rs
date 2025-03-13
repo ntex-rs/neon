@@ -2,59 +2,28 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 use std::{
-    cell::Cell, cell::RefCell, future::Future, io, sync::Arc, task::Context, thread,
-    time::Duration,
+    cell::Cell, cell::RefCell, future::Future, io, sync::Arc, thread, time::Duration,
 };
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
 
-use crate::driver::{
-    op::Asyncify, AsRawFd, Key, NotifyHandle, OpCode, Proactor, ProactorBuilder, PushEntry,
-    RawFd,
-};
-
-use crate::op::OpFuture;
+use crate::driver::{AsRawFd, Driver, NotifyHandle, RawFd};
+use crate::pool::ThreadPool;
 
 scoped_tls::scoped_thread_local!(static CURRENT_RUNTIME: Runtime);
 
-/// Type alias for `Task<Result<T, Box<dyn Any + Send>>>`, which resolves to an
-/// `Err` when the spawned future panicked.
-pub type JoinHandle<T> = Task<Result<T, Box<dyn Any + Send>>>;
+/// Type alias for `oneshot::Receiver<Result<T, Box<dyn Any + Send>>>`, which resolves to an
+/// `Err` when the spawned task panicked.
+pub type JoinHandle<T> = oneshot::Receiver<Result<T, Box<dyn Any + Send>>>;
 
-pub struct RemoteHandle {
-    handle: NotifyHandle,
-    runnables: Arc<RunnableQueue>,
-}
-
-impl RemoteHandle {
-    /// Wake up runtime
-    pub fn notify(&self) {
-        self.handle.notify().ok();
-    }
-
-    /// Spawns a new asynchronous task, returning a [`Task`] for it.
-    ///
-    /// Spawning a task enables the task to execute concurrently to other tasks.
-    /// There is no guarantee that a spawned task will execute to completion.
-    pub fn spawn<F: Future + Send + 'static>(&self, future: F) -> Task<F::Output> {
-        let runnables = self.runnables.clone();
-        let handle = self.handle.clone();
-        let schedule = move |runnable| {
-            runnables.schedule(runnable, &handle);
-        };
-        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, schedule) };
-        runnable.schedule();
-        task
-    }
-}
-
-/// The async runtime for ntex. It is a thread local runtime, and cannot be
-/// sent to other threads.
+/// The async runtime for ntex.
+///
+/// It is a thread local runtime, and cannot be sent to other threads.
 pub struct Runtime {
-    driver: Proactor,
+    driver: Driver,
     runnables: Arc<RunnableQueue>,
-    event_interval: usize,
+    pool: ThreadPool,
     data: RefCell<HashMap<TypeId, Box<dyn Any>, fxhash::FxBuildHasher>>,
 }
 
@@ -72,9 +41,9 @@ impl Runtime {
     #[allow(clippy::arc_with_non_send_sync)]
     fn with_builder(builder: &RuntimeBuilder) -> io::Result<Self> {
         Ok(Self {
-            driver: builder.proactor_builder.build()?,
-            runnables: Arc::new(RunnableQueue::new()),
-            event_interval: builder.event_interval,
+            driver: builder.build_driver()?,
+            runnables: Arc::new(RunnableQueue::new(builder.event_interval)),
+            pool: ThreadPool::new(builder.pool_limit, builder.pool_recv_timeout),
             data: RefCell::new(HashMap::default()),
         })
     }
@@ -98,7 +67,7 @@ impl Runtime {
     }
 
     /// Get current driver
-    pub fn driver(&self) -> &Proactor {
+    pub fn driver(&self) -> &Driver {
         &self.driver
     }
 
@@ -116,14 +85,14 @@ impl Runtime {
             let mut result = None;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
-            self.runnables.run(self.event_interval);
+            self.runnables.run();
             loop {
                 if let Some(result) = result.take() {
                     return result;
                 }
 
                 self.poll_with_driver(self.runnables.has_tasks(), || {
-                    self.runnables.run(self.event_interval);
+                    self.runnables.run();
                 });
             }
         })
@@ -161,51 +130,15 @@ impl Runtime {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        let op = Asyncify::new(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-            (Ok(0), res)
-        });
-        // It is safe to use `submit` here because the task is spawned immediately.
-        unsafe {
-            let fut = self.submit_with_flags(op);
-            self.spawn_unchecked(async move { fut.await.1.into_inner() })
-        }
-    }
+        let (tx, rx) = oneshot::channel();
+        self.pool
+            .dispatch(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                let _ = tx.send(result);
+            })
+            .unwrap();
 
-    fn submit_raw<T: OpCode + 'static>(
-        &self,
-        op: T,
-    ) -> PushEntry<Key<T>, (io::Result<usize>, T)> {
-        self.driver.push(op)
-    }
-
-    fn submit_with_flags<T: OpCode + 'static>(
-        &self,
-        op: T,
-    ) -> impl Future<Output = (io::Result<usize>, T)> {
-        let fut = self.submit_raw(op);
-
-        async move {
-            match fut {
-                PushEntry::Pending(user_data) => OpFuture::new(user_data).await,
-                PushEntry::Ready(res) => res,
-            }
-        }
-    }
-
-    pub(crate) fn cancel_op<T: OpCode>(&self, op: Key<T>) {
-        self.driver.cancel(op);
-    }
-
-    pub(crate) fn poll_task<T: OpCode>(
-        &self,
-        cx: &mut Context,
-        op: Key<T>,
-    ) -> PushEntry<Key<T>, (io::Result<usize>, T)> {
-        self.driver.pop(op).map_pending(|mut k| {
-            self.driver.update_waker(&mut k, cx.waker().clone());
-            k
-        })
+        rx
     }
 
     fn poll_with_driver<F: FnOnce()>(&self, has_tasks: bool, f: F) {
@@ -230,11 +163,6 @@ impl Runtime {
         self.data
             .borrow_mut()
             .insert(TypeId::of::<T>(), Box::new(val));
-    }
-
-    /// Check if container contains entry
-    pub fn contains<T: 'static>(&self) -> bool {
-        self.data.borrow().contains_key(&TypeId::of::<T>())
     }
 
     /// Get a reference to a type previously inserted on this runtime.
@@ -269,16 +197,46 @@ impl Drop for Runtime {
     }
 }
 
+/// Handle for current runtime
+pub struct RemoteHandle {
+    handle: NotifyHandle,
+    runnables: Arc<RunnableQueue>,
+}
+
+impl RemoteHandle {
+    /// Wake up runtime
+    pub fn notify(&self) {
+        self.handle.notify().ok();
+    }
+
+    /// Spawns a new asynchronous task, returning a [`Task`] for it.
+    ///
+    /// Spawning a task enables the task to execute concurrently to other tasks.
+    /// There is no guarantee that a spawned task will execute to completion.
+    pub fn spawn<F: Future + Send + 'static>(&self, future: F) -> Task<F::Output> {
+        let runnables = self.runnables.clone();
+        let handle = self.handle.clone();
+        let schedule = move |runnable| {
+            runnables.schedule(runnable, &handle);
+        };
+        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, schedule) };
+        runnable.schedule();
+        task
+    }
+}
+
 struct RunnableQueue {
     id: thread::ThreadId,
     idle: Cell<bool>,
+    event_interval: usize,
     local_runnables: RefCell<VecDeque<Runnable>>,
     sync_runnables: SegQueue<Runnable>,
 }
 
 impl RunnableQueue {
-    fn new() -> Self {
+    fn new(event_interval: usize) -> Self {
         Self {
+            event_interval,
             id: thread::current().id(),
             idle: Cell::new(true),
             local_runnables: RefCell::new(VecDeque::new()),
@@ -298,9 +256,9 @@ impl RunnableQueue {
         }
     }
 
-    fn run(&self, event_interval: usize) {
+    fn run(&self) {
         self.idle.set(false);
-        for _ in 0..event_interval {
+        for _ in 0..self.event_interval {
             let task = self.local_runnables.borrow_mut().pop_front();
             if let Some(task) = task {
                 task.run();
@@ -309,7 +267,7 @@ impl RunnableQueue {
             }
         }
 
-        for _ in 0..event_interval {
+        for _ in 0..self.event_interval {
             if !self.sync_runnables.is_empty() {
                 if let Some(task) = self.sync_runnables.pop() {
                     task.run();
@@ -329,8 +287,10 @@ impl RunnableQueue {
 /// Builder for [`Runtime`].
 #[derive(Debug, Clone)]
 pub struct RuntimeBuilder {
-    proactor_builder: ProactorBuilder,
     event_interval: usize,
+    pool_limit: usize,
+    pool_recv_timeout: Duration,
+    io_queue_capacity: u32,
 }
 
 impl Default for RuntimeBuilder {
@@ -343,15 +303,11 @@ impl RuntimeBuilder {
     /// Create the builder with default config.
     pub fn new() -> Self {
         Self {
-            proactor_builder: ProactorBuilder::new(),
             event_interval: 61,
+            pool_limit: 256,
+            pool_recv_timeout: Duration::from_secs(60),
+            io_queue_capacity: 1024,
         }
-    }
-
-    /// Replace proactor builder.
-    pub fn with_proactor(&mut self, builder: ProactorBuilder) -> &mut Self {
-        self.proactor_builder = builder;
-        self
     }
 
     /// Sets the number of scheduler ticks after which the scheduler will poll
@@ -363,9 +319,34 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set the capacity of the inner event queue or submission queue, if
+    /// exists. The default value is 1024.
+    pub fn io_queue_capacity(&mut self, capacity: u32) -> &mut Self {
+        self.io_queue_capacity = capacity;
+        self
+    }
+
+    /// Set the thread number limit of the inner thread pool, if exists. The
+    /// default value is 256.
+    pub fn thread_pool_limit(&mut self, value: usize) -> &mut Self {
+        self.pool_limit = value;
+        self
+    }
+
+    /// Set the waiting timeout of the inner thread, if exists. The default is
+    /// 60 seconds.
+    pub fn thread_pool_recv_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.pool_recv_timeout = timeout;
+        self
+    }
+
     /// Build [`Runtime`].
     pub fn build(&self) -> io::Result<Runtime> {
         Runtime::with_builder(self)
+    }
+
+    fn build_driver(&self) -> io::Result<Driver> {
+        Driver::new(self.io_queue_capacity)
     }
 }
 
@@ -394,25 +375,4 @@ pub fn spawn_blocking<T: Send + 'static>(
     f: impl (FnOnce() -> T) + Send + 'static,
 ) -> JoinHandle<T> {
     Runtime::with_current(|r| r.spawn_blocking(f))
-}
-
-/// Submit an operation to the current runtime, and return a future for it.
-///
-/// ## Panics
-///
-/// This method doesn't create runtime. It tries to obtain the current runtime
-/// by [`Runtime::with_current`].
-pub async fn submit<T: OpCode + 'static>(op: T) -> (io::Result<usize>, T) {
-    submit_with_flags(op).await
-}
-
-/// Submit an operation to the current runtime, and return a future for it with
-/// flags.
-///
-/// ## Panics
-///
-/// This method doesn't create runtime. It tries to obtain the current runtime
-/// by [`Runtime::with_current`].
-pub async fn submit_with_flags<T: OpCode + 'static>(op: T) -> (io::Result<usize>, T) {
-    Runtime::with_current(|r| r.submit_with_flags(op)).await
 }

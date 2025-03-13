@@ -5,10 +5,8 @@
 
 pub mod driver;
 pub mod net;
-mod op;
+pub mod pool;
 mod rt;
 
 pub use async_task::Task;
-pub use rt::{
-    spawn, spawn_blocking, submit, submit_with_flags, JoinHandle, Runtime, RuntimeBuilder,
-};
+pub use rt::{spawn, spawn_blocking, JoinHandle, Runtime, RuntimeBuilder};

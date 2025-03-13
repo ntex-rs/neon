@@ -1,9 +1,15 @@
-use std::{io, marker::Send, mem, os::fd::FromRawFd, os::fd::RawFd, pin::Pin, task::Poll};
+use std::{io, os::fd::RawFd};
 
-pub use crate::driver::unix::op::*;
+use crate::syscall;
 
-use super::{AsRawFd, Decision, OpCode, OwnedFd};
-use crate::{driver::op::*, syscall};
+/// The interest to poll a file descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interest {
+    /// Represents a read operation.
+    Readable,
+    /// Represents a write operation.
+    Writable,
+}
 
 pub trait Handler {
     /// Submitted interest
@@ -19,78 +25,22 @@ pub trait Handler {
     fn commit(&mut self);
 }
 
-impl<D, F> OpCode for Asyncify<F, D>
-where
-    D: Send + 'static,
-    F: (FnOnce() -> (io::Result<usize>, D)) + Send + 'static,
-{
-    fn pre_submit(self: Pin<&mut Self>) -> io::Result<Decision> {
-        Ok(Decision::Blocking)
-    }
-
-    fn operate(self: Pin<&mut Self>) -> Poll<io::Result<usize>> {
-        // Safety: self won't be moved
-        let this = unsafe { self.get_unchecked_mut() };
-        let f = this
-            .f
-            .take()
-            .expect("the operate method could only be called once");
-        let (res, data) = f();
-        this.data = Some(data);
-        Poll::Ready(res)
-    }
+/// Create socket.
+pub async fn create_socket(
+    domain: i32,
+    socket_type: i32,
+    protocol: i32,
+) -> io::Result<i32> {
+    crate::spawn_blocking(move || syscall!(libc::socket(domain, socket_type, protocol)))
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        .and_then(|result| result.unwrap())
 }
 
-/// Close socket fd.
-pub struct CloseSocket {
-    pub(crate) fd: mem::ManuallyDrop<OwnedFd>,
-}
-
-impl CloseSocket {
-    /// Create [`CloseSocket`].
-    pub fn new(fd: OwnedFd) -> Self {
-        Self {
-            fd: mem::ManuallyDrop::new(fd),
-        }
-    }
-}
-
-impl OpCode for CreateSocket {
-    fn pre_submit(self: Pin<&mut Self>) -> io::Result<Decision> {
-        Ok(Decision::Blocking)
-    }
-
-    fn operate(self: Pin<&mut Self>) -> Poll<io::Result<usize>> {
-        Poll::Ready(Ok(
-            syscall!(libc::socket(self.domain, self.socket_type, self.protocol))? as _,
-        ))
-    }
-}
-
-impl<S: AsRawFd> OpCode for ShutdownSocket<S> {
-    fn pre_submit(self: Pin<&mut Self>) -> io::Result<Decision> {
-        Ok(Decision::Blocking)
-    }
-
-    fn operate(self: Pin<&mut Self>) -> Poll<io::Result<usize>> {
-        Poll::Ready(Ok(
-            syscall!(libc::shutdown(self.fd.as_raw_fd(), self.how()))? as _,
-        ))
-    }
-}
-
-impl CloseSocket {
-    pub fn from_raw_fd(fd: RawFd) -> Self {
-        Self::new(unsafe { FromRawFd::from_raw_fd(fd) })
-    }
-}
-
-impl OpCode for CloseSocket {
-    fn pre_submit(self: Pin<&mut Self>) -> io::Result<Decision> {
-        Ok(Decision::Blocking)
-    }
-
-    fn operate(self: Pin<&mut Self>) -> Poll<io::Result<usize>> {
-        Poll::Ready(Ok(syscall!(libc::close(self.fd.as_raw_fd()))? as _))
-    }
+/// Close socket.
+pub async fn close_socket(fd: RawFd) -> io::Result<i32> {
+    crate::spawn_blocking(move || syscall!(libc::close(fd)))
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        .and_then(|result| result.unwrap())
 }

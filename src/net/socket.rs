@@ -98,13 +98,14 @@ impl Socket {
             ty |= libc::SOCK_CLOEXEC;
         }
 
-        let op = crate::driver::op::CreateSocket::new(
+        let fd = crate::driver::op::create_socket(
             domain.into(),
             ty,
             protocol.map(|p| p.into()).unwrap_or_default(),
-        );
-        let (res, _) = crate::submit(op).await;
-        let socket = unsafe { Socket2::from_raw_fd(res? as _) };
+        )
+        .await?;
+
+        let socket = unsafe { Socket2::from_raw_fd(fd) };
 
         Self::from_socket2(socket)
     }

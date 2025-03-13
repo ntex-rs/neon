@@ -1,45 +1,18 @@
 pub use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
-use std::cell::{Cell, RefCell};
-use std::{
-    collections::VecDeque, io, pin::Pin, rc::Rc, sync::Arc, task::Poll, time::Duration,
-};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, io, rc::Rc, time::Duration};
 
-use crossbeam_queue::SegQueue;
 use io_uring::cqueue::{more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
 use io_uring::squeue::Entry as SEntry;
 use io_uring::types::{Fd, SubmitArgs, Timespec};
 use io_uring::IoUring;
 
+pub mod op;
+
 mod notify;
-pub(crate) mod op;
-
-pub use self::notify::NotifyHandle;
-
 use self::notify::Notifier;
-use crate::driver::{sys, AsyncifyPool, Entry, Key, ProactorBuilder};
-
-/// Abstraction of io-uring operations.
-pub trait OpCode {
-    /// Name of the operation
-    fn name(&self) -> &'static str;
-
-    /// Call the operation in a blocking way. This method will only be called if
-    /// [`create_entry`] returns [`OpEntry::Blocking`].
-    fn call_blocking(self: Pin<&mut Self>) -> io::Result<usize> {
-        unreachable!("this operation is asynchronous")
-    }
-
-    /// Set the result when it successfully completes.
-    /// The operation stores the result and is responsible to release it if the
-    /// operation is cancelled.
-    ///
-    /// # Safety
-    ///
-    /// Users should not call it.
-    unsafe fn set_result(self: Pin<&mut Self>, _: usize) {}
-}
+pub use self::notify::NotifyHandle;
 
 #[derive(Debug)]
 enum Change {
@@ -78,11 +51,9 @@ impl DriverApi {
 }
 
 /// Low-level driver of io-uring.
-pub(crate) struct Driver {
+pub struct Driver {
     ring: RefCell<IoUring<SEntry, CEntry>>,
     notifier: Notifier,
-    pool: AsyncifyPool,
-    pool_completed: Arc<SegQueue<Entry>>,
 
     hid: Cell<u64>,
     changes: Rc<RefCell<VecDeque<Change>>>,
@@ -96,13 +67,13 @@ impl Driver {
     const BATCH_MASK: u64 = 0xFFFF_0000_0000_0000;
     const DATA_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-    pub fn new(builder: &ProactorBuilder) -> io::Result<Self> {
+    pub fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New io-uring driver");
 
         let mut ring = IoUring::builder()
             .setup_coop_taskrun()
             .setup_single_issuer()
-            .build(builder.capacity)?;
+            .build(capacity)?;
 
         let notifier = Notifier::new()?;
 
@@ -121,16 +92,14 @@ impl Driver {
         Ok(Self {
             notifier,
             ring: RefCell::new(ring),
-            pool: builder.create_or_get_thread_pool(),
-            pool_completed: Arc::new(SegQueue::new()),
-
             hid: Cell::new(0),
             changes: Rc::new(RefCell::new(VecDeque::new())),
             handlers: Cell::new(Some(Box::new(Vec::new()))),
         })
     }
 
-    pub fn register_handler<F>(&self, f: F)
+    /// Register updates handler
+    pub fn register<F>(&self, f: F)
     where
         F: FnOnce(DriverApi) -> Box<dyn self::op::Handler>,
     {
@@ -152,7 +121,9 @@ impl Driver {
         let res = {
             // Last part of submission queue, wait till timeout.
             if let Some(duration) = timeout {
-                let timespec = timespec(duration);
+                let timespec = Timespec::new()
+                    .sec(duration.as_secs())
+                    .nsec(duration.subsec_nanos());
                 let args = SubmitArgs::new().timespec(&timespec);
                 ring.submitter().submit_with_args(1, &args)
             } else {
@@ -182,10 +153,6 @@ impl Driver {
                 _ => Err(e),
             },
         }
-    }
-
-    pub fn create_op<T: sys::OpCode + 'static>(&self, op: T) -> Key<T> {
-        Key::new(self.as_raw_fd(), op)
     }
 
     fn apply_changes(&self) -> bool {
@@ -220,13 +187,8 @@ impl Driver {
         !changes.is_empty()
     }
 
-    pub unsafe fn poll<F: FnOnce()>(
-        &self,
-        timeout: Option<Duration>,
-        f: F,
-    ) -> io::Result<()> {
-        self.poll_blocking();
-
+    /// Poll the driver and handle completed operations.
+    pub fn poll<F: FnOnce()>(&self, timeout: Option<Duration>, f: F) -> io::Result<()> {
         let has_more = self.apply_changes();
         let poll_result = self.poll_completions();
 
@@ -242,19 +204,6 @@ impl Driver {
         f();
 
         Ok(())
-    }
-
-    pub fn push(&self, op: &mut Key<dyn sys::OpCode>) -> Poll<io::Result<usize>> {
-        log::trace!("Push op: {:?}", op.as_op_pin().name());
-
-        let user_data = op.user_data();
-        loop {
-            if self.push_blocking(user_data) {
-                break Poll::Pending;
-            } else {
-                self.poll_blocking();
-            }
-        }
     }
 
     fn poll_completions(&self) -> bool {
@@ -298,30 +247,6 @@ impl Driver {
         true
     }
 
-    fn poll_blocking(&self) {
-        if !self.pool_completed.is_empty() {
-            while let Some(entry) = self.pool_completed.pop() {
-                unsafe {
-                    entry.notify();
-                }
-            }
-        }
-    }
-
-    fn push_blocking(&self, user_data: usize) -> bool {
-        let handle = self.handle();
-        let completed = self.pool_completed.clone();
-        self.pool
-            .dispatch(move || {
-                let mut op = unsafe { Key::<dyn sys::OpCode>::new_unchecked(user_data) };
-                let op_pin = op.as_op_pin();
-                let res = op_pin.call_blocking();
-                completed.push(Entry::new(user_data, res));
-                handle.notify().ok();
-            })
-            .is_ok()
-    }
-
     pub fn handle(&self) -> NotifyHandle {
         self.notifier.handle()
     }
@@ -331,10 +256,4 @@ impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
         self.ring.borrow().as_raw_fd()
     }
-}
-
-fn timespec(duration: std::time::Duration) -> Timespec {
-    Timespec::new()
-        .sec(duration.as_secs())
-        .nsec(duration.subsec_nanos())
 }
