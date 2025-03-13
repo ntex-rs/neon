@@ -252,6 +252,10 @@ impl Driver {
         true
     }
 
+    pub(crate) fn push_blocking(&self, f: Box<dyn crate::pool::Dispatchable + Send>) {
+        crate::Runtime::with_current(|rt| rt.schedule_blocking(f));
+    }
+
     pub fn handle(&self) -> NotifyHandle {
         self.notifier.handle()
     }

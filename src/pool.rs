@@ -3,32 +3,17 @@ use std::{fmt, thread, time::Duration};
 
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 
-/// An error that may be emitted when all worker threads are busy. It simply
-/// returns the dispatchable value with a convenient [`fmt::Debug`] and
-/// [`fmt::Display`] implementation.
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct DispatchError<T>(pub T);
+/// An error that may be emitted when all worker threads are busy.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DispatchError;
 
-impl<T> DispatchError<T> {
-    /// Consume the error, yielding the dispatchable that failed to be sent.
-    pub fn into_inner(self) -> T {
-        self.0
-    }
-}
+impl std::error::Error for DispatchError {}
 
-impl<T> fmt::Debug for DispatchError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        "DispatchError(..)".fmt(f)
-    }
-}
-
-impl<T> fmt::Display for DispatchError<T> {
+impl fmt::Display for DispatchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         "All threads are busy".fmt(f)
     }
 }
-
-impl<T> std::error::Error for DispatchError<T> {}
 
 type BoxedDispatchable = Box<dyn Dispatchable + Send>;
 
@@ -99,16 +84,13 @@ impl ThreadPool {
     /// user should not use it. When all threads are busy and thread number
     /// limit has been reached, it will return an error with the original
     /// dispatchable.
-    pub fn dispatch<D: Dispatchable>(&self, f: D) -> Result<(), DispatchError<D>> {
-        match self.sender.try_send(Box::new(f) as BoxedDispatchable) {
+    pub fn dispatch(&self, f: BoxedDispatchable) -> Result<(), DispatchError> {
+        match self.sender.try_send(f) {
             Ok(_) => Ok(()),
             Err(e) => match e {
                 TrySendError::Full(f) => {
                     if self.counter.load(Ordering::Acquire) >= self.thread_limit {
-                        // Safety: we can ensure the type
-                        Err(DispatchError(*unsafe {
-                            Box::from_raw(Box::into_raw(f).cast())
-                        }))
+                        Err(DispatchError)
                     } else {
                         thread::spawn(worker(
                             self.receiver.clone(),

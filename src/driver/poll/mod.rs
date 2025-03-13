@@ -9,6 +9,8 @@ use polling::{Event, Events, Poller};
 
 pub mod op;
 
+use crate::pool::Dispatchable;
+
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
     struct Flags: u8 {
@@ -85,7 +87,6 @@ impl FdItem {
     }
 }
 
-#[derive(Debug)]
 enum Change {
     Register {
         fd: RawFd,
@@ -102,6 +103,7 @@ enum Change {
         fd: RawFd,
         batch: usize,
     },
+    Blocking(Box<dyn Dispatchable + Send>),
 }
 
 pub struct DriverApi {
@@ -284,6 +286,7 @@ impl Driver {
                     let item = registry.entry(*fd).or_insert_with(|| FdItem::new(*batch));
                     item.unregister_all();
                 }
+                _ => {}
             }
         }
 
@@ -292,6 +295,10 @@ impl Driver {
                 Change::Register { fd, .. } => Some(fd),
                 Change::Unregister { fd, .. } => Some(fd),
                 Change::UnregisterAll { fd, .. } => Some(fd),
+                Change::Blocking(f) => {
+                    crate::Runtime::with_current(|rt| rt.schedule_blocking(f));
+                    None
+                }
             };
 
             if let Some(fd) = fd {
@@ -322,6 +329,10 @@ impl Driver {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn push_blocking(&self, f: Box<dyn Dispatchable + Send>) {
+        self.changes.borrow_mut().push(Change::Blocking(f));
     }
 
     /// Get notification handle

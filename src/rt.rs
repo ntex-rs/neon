@@ -131,14 +131,16 @@ impl Runtime {
         R: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        self.pool
-            .dispatch(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-                let _ = tx.send(result);
-            })
-            .unwrap();
+        self.driver.push_blocking(Box::new(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            let _ = tx.send(result);
+        }));
 
         rx
+    }
+
+    pub(crate) fn schedule_blocking(&self, f: Box<dyn crate::pool::Dispatchable + Send>) {
+        let _ = self.pool.dispatch(f);
     }
 
     fn poll_with_driver<F: FnOnce()>(&self, has_tasks: bool, f: F) {

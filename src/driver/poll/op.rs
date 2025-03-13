@@ -39,8 +39,11 @@ pub async fn create_socket(
 
 /// Close socket.
 pub async fn close_socket(fd: RawFd) -> io::Result<i32> {
-    crate::spawn_blocking(move || crate::syscall!(libc::close(fd)))
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-        .and_then(|result| result.unwrap())
+    crate::spawn_blocking(move || {
+        println!("close socket");
+        crate::syscall!(libc::close(fd))
+    })
+    .await
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    .and_then(|result| result.unwrap())
 }
