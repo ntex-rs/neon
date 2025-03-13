@@ -5,9 +5,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![allow(clippy::type_complexity)]
 
-mod driver_type;
-pub use driver_type::*;
-
 cfg_if::cfg_if! {
     //if #[cfg(windows)] {
     //    #[path = "iocp/mod.rs"]
@@ -23,6 +20,28 @@ cfg_if::cfg_if! {
 }
 
 pub use sys::*;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DriverType {
+    Poll,
+    IoUring,
+}
+
+impl DriverType {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            DriverType::Poll => "polling",
+            DriverType::IoUring => "io-uring",
+        }
+    }
+
+    pub const fn is_polling(&self) -> bool {
+        match self {
+            DriverType::Poll => true,
+            DriverType::IoUring => false,
+        }
+    }
+}
 
 #[cfg(windows)]
 #[macro_export]

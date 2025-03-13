@@ -1,8 +1,6 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::{io, mem, sync::Arc};
 
-use crate::syscall;
-
 #[derive(Debug)]
 pub(crate) struct Notifier {
     fd: Arc<OwnedFd>,
@@ -11,7 +9,7 @@ pub(crate) struct Notifier {
 impl Notifier {
     /// Create a new notifier.
     pub(crate) fn new() -> io::Result<Self> {
-        let fd = syscall!(libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK))?;
+        let fd = crate::syscall!(libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK))?;
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         Ok(Self { fd: Arc::new(fd) })
     }
@@ -19,7 +17,7 @@ impl Notifier {
     pub(crate) fn clear(&self) -> io::Result<()> {
         loop {
             let mut buffer = [0u64];
-            let res = syscall!(libc::read(
+            let res = crate::syscall!(libc::read(
                 self.fd.as_raw_fd(),
                 buffer.as_mut_ptr().cast(),
                 mem::size_of::<u64>()
@@ -63,7 +61,7 @@ impl NotifyHandle {
     /// Notify the inner driver.
     pub fn notify(&self) -> io::Result<()> {
         let data = 1u64;
-        syscall!(libc::write(
+        crate::syscall!(libc::write(
             self.fd.as_raw_fd(),
             &data as *const _ as *const _,
             std::mem::size_of::<u64>(),

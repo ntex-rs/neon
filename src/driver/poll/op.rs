@@ -1,7 +1,5 @@
 use std::{io, os::fd::RawFd};
 
-use crate::syscall;
-
 /// The interest to poll a file descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interest {
@@ -31,15 +29,17 @@ pub async fn create_socket(
     socket_type: i32,
     protocol: i32,
 ) -> io::Result<i32> {
-    crate::spawn_blocking(move || syscall!(libc::socket(domain, socket_type, protocol)))
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-        .and_then(|result| result.unwrap())
+    crate::spawn_blocking(move || {
+        crate::syscall!(libc::socket(domain, socket_type, protocol))
+    })
+    .await
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    .and_then(|result| result.unwrap())
 }
 
 /// Close socket.
 pub async fn close_socket(fd: RawFd) -> io::Result<i32> {
-    crate::spawn_blocking(move || syscall!(libc::close(fd)))
+    crate::spawn_blocking(move || crate::syscall!(libc::close(fd)))
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
         .and_then(|result| result.unwrap())

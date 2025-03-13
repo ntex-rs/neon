@@ -98,6 +98,11 @@ impl Driver {
         })
     }
 
+    /// Driver type
+    pub const fn tp(&self) -> crate::driver::DriverType {
+        crate::driver::DriverType::IoUring
+    }
+
     /// Register updates handler
     pub fn register<F>(&self, f: F)
     where

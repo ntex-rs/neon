@@ -42,7 +42,7 @@ impl Socket {
             //
             // https://patchwork.kernel.org/project/linux-block/patch/f999615b-205c-49b7-b272-c4e42e45e09d@kernel.dk/#22949861
             if cfg!(not(all(target_os = "linux", feature = "io-uring")))
-                || crate::driver::DriverType::is_polling()
+                || crate::Runtime::with_current(|rt| rt.driver().tp().is_polling())
             {
                 socket.set_nonblocking(true)?;
             }
