@@ -91,7 +91,7 @@ impl Runtime {
                     return result;
                 }
 
-                self.poll_with_driver(self.runnables.has_tasks(), || {
+                self.poll(self.runnables.has_tasks(), || {
                     self.runnables.run();
                 });
             }
@@ -131,10 +131,13 @@ impl Runtime {
         R: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        self.driver.push_blocking(Box::new(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-            let _ = tx.send(result);
-        }));
+        self.driver.push_blocking(
+            self,
+            Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                let _ = tx.send(result);
+            }),
+        );
 
         rx
     }
@@ -143,7 +146,7 @@ impl Runtime {
         let _ = self.pool.dispatch(f);
     }
 
-    fn poll_with_driver<F: FnOnce()>(&self, has_tasks: bool, f: F) {
+    fn poll<F: FnOnce()>(&self, has_tasks: bool, f: F) {
         let timeout = if has_tasks {
             Some(Duration::ZERO)
         } else {

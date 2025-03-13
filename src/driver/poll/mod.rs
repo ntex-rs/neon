@@ -112,6 +112,7 @@ pub struct DriverApi {
 }
 
 impl DriverApi {
+    /// Register interest for specified file descriptor.
     pub fn register(&self, fd: RawFd, user_data: usize, int: op::Interest) {
         log::debug!(
             "Register interest {:?} for {:?} user-data: {:?}",
@@ -127,6 +128,7 @@ impl DriverApi {
         });
     }
 
+    /// Unregister interest for specified file descriptor.
     pub fn unregister(&self, fd: RawFd, int: op::Interest) {
         log::debug!(
             "Unregister interest {:?} for {:?} batch: {:?}",
@@ -141,6 +143,7 @@ impl DriverApi {
         });
     }
 
+    /// Unregister all interests.
     pub fn unregister_all(&self, fd: RawFd) {
         self.change(Change::UnregisterAll {
             fd,
@@ -331,7 +334,11 @@ impl Driver {
         Ok(())
     }
 
-    pub(crate) fn push_blocking(&self, f: Box<dyn Dispatchable + Send>) {
+    pub(crate) fn push_blocking(
+        &self,
+        _: &crate::Runtime,
+        f: Box<dyn Dispatchable + Send>,
+    ) {
         self.changes.borrow_mut().push(Change::Blocking(f));
     }
 
