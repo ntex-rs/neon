@@ -24,7 +24,7 @@ pub struct Runtime {
     driver: Driver,
     runnables: Arc<RunnableQueue>,
     pool: ThreadPool,
-    data: RefCell<HashMap<TypeId, Box<dyn Any>, fxhash::FxBuildHasher>>,
+    values: RefCell<HashMap<TypeId, Box<dyn Any>, fxhash::FxBuildHasher>>,
 }
 
 impl Runtime {
@@ -44,7 +44,7 @@ impl Runtime {
             driver: builder.build_driver()?,
             runnables: Arc::new(RunnableQueue::new(builder.event_interval)),
             pool: ThreadPool::new(builder.pool_limit, builder.pool_recv_timeout),
-            data: RefCell::new(HashMap::default()),
+            values: RefCell::new(HashMap::default()),
         })
     }
 
@@ -160,22 +160,28 @@ impl Runtime {
         }
     }
 
-    /// Insert a type into this runtime.
-    pub fn insert<T: 'static>(&self, val: T) {
-        self.data
-            .borrow_mut()
-            .insert(TypeId::of::<T>(), Box::new(val));
-    }
-
-    /// Get a reference to a type previously inserted on this runtime.
-    pub fn get<T>(&self) -> Option<T>
+    /// Get a type previously inserted to this runtime or create new one.
+    pub fn value<T, F>(f: F) -> T
     where
         T: Clone + 'static,
+        F: FnOnce(&Runtime) -> T,
     {
-        self.data
-            .borrow()
-            .get(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_ref().cloned())
+        Runtime::with_current(|rt| {
+            let val = rt
+                .values
+                .borrow()
+                .get(&TypeId::of::<T>())
+                .and_then(|boxed| boxed.downcast_ref().cloned());
+            if let Some(val) = val {
+                val
+            } else {
+                let val = f(rt);
+                rt.values
+                    .borrow_mut()
+                    .insert(TypeId::of::<T>(), Box::new(val.clone()));
+                val
+            }
+        })
     }
 }
 
