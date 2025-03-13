@@ -48,7 +48,7 @@ impl AsRawFd for Notifier {
 }
 
 #[derive(Clone)]
-/// A notify handle to the inner driver.
+/// A notify handle to the driver.
 pub struct NotifyHandle {
     fd: Arc<OwnedFd>,
 }
@@ -58,7 +58,7 @@ impl NotifyHandle {
         Self { fd }
     }
 
-    /// Notify the inner driver.
+    /// Notify the driver.
     pub fn notify(&self) -> io::Result<()> {
         let data = 1u64;
         crate::syscall!(libc::write(

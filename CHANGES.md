@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.2] - 2025-03-xx
+
+* Export runtime `Handle`
+
 ## [0.1.1] - 2025-03-13
 
 * Simplify code

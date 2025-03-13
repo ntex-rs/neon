@@ -1,3 +1,4 @@
+//! A thread pool to perform blocking operations in other threads.
 use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
 use std::{fmt, thread, time::Duration};
 

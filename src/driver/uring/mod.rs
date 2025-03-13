@@ -26,6 +26,7 @@ pub struct DriverApi {
 }
 
 impl DriverApi {
+    /// Submit request to the driver.
     pub fn submit(&self, user_data: u32, entry: SEntry) {
         log::debug!(
             "Submit operation batch: {:?} user-data: {:?} entry: {:?}",
@@ -38,14 +39,15 @@ impl DriverApi {
         });
     }
 
-    pub fn cancel(&self, op_id: u32) {
+    /// Attempt to cancel an already issued request.
+    pub fn cancel(&self, user_data: u32) {
         log::debug!(
             "Cancel operation batch: {:?} user-data: {:?}",
             self.batch >> Driver::BATCH,
-            op_id
+            user_data
         );
         self.changes.borrow_mut().push_back(Change::Cancel {
-            op_id: op_id as u64 | self.batch,
+            op_id: user_data as u64 | self.batch,
         });
     }
 }
@@ -67,6 +69,7 @@ impl Driver {
     const BATCH_MASK: u64 = 0xFFFF_0000_0000_0000;
     const DATA_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
+    /// Create io-uring driver
     pub fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New io-uring driver");
 
@@ -256,6 +259,7 @@ impl Driver {
         crate::Runtime::with_current(|rt| rt.schedule_blocking(f));
     }
 
+    /// Get notification handle for this driver
     pub fn handle(&self) -> NotifyHandle {
         self.notifier.handle()
     }

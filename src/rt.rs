@@ -72,8 +72,8 @@ impl Runtime {
     }
 
     /// Get handle for current runtime
-    pub fn handle(&self) -> RemoteHandle {
-        RemoteHandle {
+    pub fn handle(&self) -> Handle {
+        Handle {
             handle: self.driver.handle(),
             runnables: self.runnables.clone(),
         }
@@ -206,12 +206,12 @@ impl Drop for Runtime {
 }
 
 /// Handle for current runtime
-pub struct RemoteHandle {
+pub struct Handle {
     handle: NotifyHandle,
     runnables: Arc<RunnableQueue>,
 }
 
-impl RemoteHandle {
+impl Handle {
     /// Wake up runtime
     pub fn notify(&self) {
         self.handle.notify().ok();

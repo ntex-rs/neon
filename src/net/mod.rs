@@ -1,6 +1,6 @@
-//! Network related.
+//! Network related tyes.
 //!
-//! Currently, TCP/UDP/Unix socket are implemented.
+//! Currently, TCP/Unix sockets are implemented.
 
 mod socket;
 mod tcp;
