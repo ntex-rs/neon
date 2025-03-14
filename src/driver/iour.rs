@@ -1,6 +1,6 @@
-pub use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, io, rc::Rc, time::Duration};
+use std::cell::{Cell, RefCell};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::{collections::VecDeque, io, mem, rc::Rc, sync::Arc, time::Duration};
 
 use io_uring::cqueue::{more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
@@ -8,11 +8,12 @@ use io_uring::squeue::Entry as SEntry;
 use io_uring::types::{Fd, SubmitArgs, Timespec};
 use io_uring::IoUring;
 
-pub mod op;
+pub trait Handler {
+    /// Operation is completed
+    fn completed(&mut self, user_data: usize, flags: u32, result: io::Result<i32>);
 
-mod notify;
-use self::notify::Notifier;
-pub use self::notify::NotifyHandle;
+    fn canceled(&mut self, user_data: usize);
+}
 
 #[derive(Debug)]
 enum Change {
@@ -59,7 +60,7 @@ pub struct Driver {
 
     hid: Cell<u64>,
     changes: Rc<RefCell<VecDeque<Change>>>,
-    handlers: Cell<Option<Box<Vec<Box<dyn op::Handler>>>>>,
+    handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
 impl Driver {
@@ -109,7 +110,7 @@ impl Driver {
     /// Register updates handler
     pub fn register<F>(&self, f: F)
     where
-        F: FnOnce(DriverApi) -> Box<dyn self::op::Handler>,
+        F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
         let id = self.hid.get();
         let mut handlers = self.handlers.take().unwrap_or_default();
@@ -242,7 +243,7 @@ impl Driver {
                         handlers[batch].canceled(user_data);
                     } else {
                         let result = if result < 0 {
-                            Err(io::Error::from_raw_os_error(result))
+                            Err(io::Error::from_raw_os_error(-result))
                         } else {
                             Ok(result as _)
                         };
@@ -272,5 +273,74 @@ impl Driver {
 impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
         self.ring.borrow().as_raw_fd()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Notifier {
+    fd: Arc<OwnedFd>,
+}
+
+impl Notifier {
+    /// Create a new notifier.
+    pub(crate) fn new() -> io::Result<Self> {
+        let fd = crate::syscall!(libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK))?;
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        Ok(Self { fd: Arc::new(fd) })
+    }
+
+    pub(crate) fn clear(&self) -> io::Result<()> {
+        loop {
+            let mut buffer = [0u64];
+            let res = crate::syscall!(libc::read(
+                self.fd.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                mem::size_of::<u64>()
+            ));
+            match res {
+                Ok(len) => {
+                    debug_assert_eq!(len, mem::size_of::<u64>() as _);
+                    break Ok(());
+                }
+                // Clear the next time:)
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(()),
+                // Just like read_exact
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => break Err(e),
+            }
+        }
+    }
+
+    pub(crate) fn handle(&self) -> NotifyHandle {
+        NotifyHandle::new(self.fd.clone())
+    }
+}
+
+impl AsRawFd for Notifier {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+#[derive(Clone)]
+/// A notify handle to the driver.
+pub struct NotifyHandle {
+    fd: Arc<OwnedFd>,
+}
+
+impl NotifyHandle {
+    pub(crate) fn new(fd: Arc<OwnedFd>) -> Self {
+        Self { fd }
+    }
+
+    /// Notify the driver.
+    pub fn notify(&self) -> io::Result<()> {
+        let data = 1u64;
+        crate::syscall!(libc::write(
+            self.fd.as_raw_fd(),
+            &data as *const _ as *const _,
+            std::mem::size_of::<u64>(),
+        ))?;
+        Ok(())
     }
 }

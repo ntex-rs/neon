@@ -11,10 +11,10 @@ cfg_if::cfg_if! {
     //    mod sys;
     //} else
     if #[cfg(all(target_os = "linux", feature = "io-uring"))] {
-        #[path = "uring/mod.rs"]
+        #[path = "iour.rs"]
         mod sys;
     } else if #[cfg(unix)] {
-        #[path = "poll/mod.rs"]
+        #[path = "poll.rs"]
         mod sys;
     }
 }

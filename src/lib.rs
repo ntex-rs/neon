@@ -4,7 +4,6 @@
 // #![warn(missing_docs)]
 
 pub mod driver;
-pub mod net;
 pub mod pool;
 mod rt;
 

@@ -1,13 +1,11 @@
 #![allow(clippy::type_complexity)]
-pub use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{cell::Cell, cell::RefCell, io, rc::Rc, sync::Arc};
-use std::{num::NonZeroUsize, os::fd::BorrowedFd, time::Duration};
+use std::{num::NonZeroUsize, time::Duration};
 
 use nohash_hasher::IntMap;
 use polling::{Event, Events, Poller};
-
-pub mod op;
 
 use crate::pool::Dispatchable;
 
@@ -17,6 +15,29 @@ bitflags::bitflags! {
         const NEW     = 0b0000_0001;
         const CHANGED = 0b0000_0010;
     }
+}
+
+/// The interest to poll a file descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interest {
+    /// Represents a read operation.
+    Readable,
+    /// Represents a write operation.
+    Writable,
+}
+
+pub trait Handler {
+    /// Submitted interest
+    fn readable(&mut self, id: usize);
+
+    /// Submitted interest
+    fn writable(&mut self, id: usize);
+
+    /// Operation submission has failed
+    fn error(&mut self, id: usize, err: io::Error);
+
+    /// All events are processed, process all updates
+    fn commit(&mut self);
 }
 
 #[derive(Debug)]
@@ -37,22 +58,22 @@ impl FdItem {
         }
     }
 
-    fn register(&mut self, user_data: usize, interest: op::Interest) {
+    fn register(&mut self, user_data: usize, interest: Interest) {
         self.flags.insert(Flags::CHANGED);
         match interest {
-            op::Interest::Readable => {
+            Interest::Readable => {
                 self.read = Some(user_data);
             }
-            op::Interest::Writable => {
+            Interest::Writable => {
                 self.write = Some(user_data);
             }
         }
     }
 
-    fn unregister(&mut self, int: op::Interest) {
+    fn unregister(&mut self, int: Interest) {
         let res = match int {
-            op::Interest::Readable => self.read.take(),
-            op::Interest::Writable => self.write.take(),
+            Interest::Readable => self.read.take(),
+            Interest::Writable => self.write.take(),
         };
         if res.is_some() {
             self.flags.insert(Flags::CHANGED);
@@ -68,10 +89,10 @@ impl FdItem {
         let _ = self.write.take();
     }
 
-    fn user_data(&mut self, interest: op::Interest) -> Option<usize> {
+    fn user_data(&mut self, interest: Interest) -> Option<usize> {
         match interest {
-            op::Interest::Readable => self.read,
-            op::Interest::Writable => self.write,
+            Interest::Readable => self.read,
+            Interest::Writable => self.write,
         }
     }
 
@@ -92,12 +113,12 @@ enum Change {
         fd: RawFd,
         batch: usize,
         user_data: usize,
-        int: op::Interest,
+        int: Interest,
     },
     Unregister {
         fd: RawFd,
         batch: usize,
-        int: op::Interest,
+        int: Interest,
     },
     UnregisterAll {
         fd: RawFd,
@@ -113,7 +134,7 @@ pub struct DriverApi {
 
 impl DriverApi {
     /// Register interest for specified file descriptor.
-    pub fn register(&self, fd: RawFd, user_data: usize, int: op::Interest) {
+    pub fn register(&self, fd: RawFd, user_data: usize, int: Interest) {
         log::debug!(
             "Register interest {:?} for {:?} user-data: {:?}",
             int,
@@ -129,7 +150,7 @@ impl DriverApi {
     }
 
     /// Unregister interest for specified file descriptor.
-    pub fn unregister(&self, fd: RawFd, int: op::Interest) {
+    pub fn unregister(&self, fd: RawFd, int: Interest) {
         log::debug!(
             "Unregister interest {:?} for {:?} batch: {:?}",
             int,
@@ -163,7 +184,7 @@ pub struct Driver {
     registry: RefCell<IntMap<RawFd, FdItem>>,
     hid: Cell<usize>,
     changes: Rc<RefCell<Vec<Change>>>,
-    handlers: Cell<Option<Box<Vec<Box<dyn self::op::Handler>>>>>,
+    handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
 impl Driver {
@@ -194,7 +215,7 @@ impl Driver {
     /// Register updates handler
     pub fn register<F>(&self, f: F)
     where
-        F: FnOnce(DriverApi) -> Box<dyn self::op::Handler>,
+        F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
         let id = self.hid.get();
         let mut handlers = self.handlers.take().unwrap_or_default();
@@ -226,12 +247,12 @@ impl Driver {
 
                 if let Some(item) = registry.get_mut(&fd) {
                     if event.readable {
-                        if let Some(user_data) = item.user_data(op::Interest::Readable) {
+                        if let Some(user_data) = item.user_data(Interest::Readable) {
                             handlers[item.batch].readable(user_data)
                         }
                     }
                     if event.writable {
-                        if let Some(user_data) = item.user_data(op::Interest::Writable) {
+                        if let Some(user_data) = item.user_data(Interest::Writable) {
                             handlers[item.batch].writable(user_data)
                         }
                     }

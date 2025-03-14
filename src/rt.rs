@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
+use std::os::fd::{AsRawFd, RawFd};
 use std::{
     cell::Cell, cell::RefCell, future::Future, io, sync::Arc, thread, time::Duration,
 };
@@ -8,7 +9,7 @@ use std::{
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
 
-use crate::driver::{AsRawFd, Driver, NotifyHandle, RawFd};
+use crate::driver::{Driver, NotifyHandle};
 use crate::pool::ThreadPool;
 
 scoped_tls::scoped_thread_local!(static CURRENT_RUNTIME: Runtime);
