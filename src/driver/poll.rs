@@ -306,9 +306,10 @@ impl Driver {
                     let item = registry.entry(*fd).or_insert_with(|| FdItem::new(*batch));
                     item.unregister(*int);
                 }
-                Change::UnregisterAll { fd, batch } => {
-                    let item = registry.entry(*fd).or_insert_with(|| FdItem::new(*batch));
-                    item.unregister_all();
+                Change::UnregisterAll { fd, .. } => {
+                    if let Some(item) = registry.get_mut(fd) {
+                        item.unregister_all();
+                    }
                 }
                 _ => {}
             }
@@ -340,7 +341,7 @@ impl Driver {
                             }
                         } else if new {
                             item.flags.remove(Flags::NEW);
-                            unsafe { self.poll.add(fd, renew_event)? };
+                            let res = unsafe { self.poll.add(fd, renew_event) };
                         } else {
                             self.poll.modify(
                                 unsafe { BorrowedFd::borrow_raw(fd) },
