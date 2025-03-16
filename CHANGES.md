@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.4] - 2025-03-16
+
+* Do not create fd item for unregister-all
+
 ## [0.1.3] - 2025-03-14
 
 * Remove neon::net
