@@ -122,7 +122,6 @@ enum Change {
     },
     UnregisterAll {
         fd: RawFd,
-        batch: usize,
     },
     Blocking(Box<dyn Dispatchable + Send>),
 }
@@ -166,10 +165,7 @@ impl DriverApi {
 
     /// Unregister all interests.
     pub fn unregister_all(&self, fd: RawFd) {
-        self.change(Change::UnregisterAll {
-            fd,
-            batch: self.batch,
-        });
+        self.change(Change::UnregisterAll { fd });
     }
 
     fn change(&self, change: Change) {
@@ -341,7 +337,7 @@ impl Driver {
                             }
                         } else if new {
                             item.flags.remove(Flags::NEW);
-                            let res = unsafe { self.poll.add(fd, renew_event) };
+                            unsafe { self.poll.add(fd, renew_event)? };
                         } else {
                             self.poll.modify(
                                 unsafe { BorrowedFd::borrow_raw(fd) },
