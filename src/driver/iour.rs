@@ -82,8 +82,8 @@ impl Driver {
         log::trace!("New io-uring driver");
 
         let mut ring = IoUring::builder()
-            .setup_coop_taskrun()
-            .setup_single_issuer()
+            //.setup_coop_taskrun()
+            //.setup_single_issuer()
             .build(capacity)?;
 
         let mut probe = Probe::new();
