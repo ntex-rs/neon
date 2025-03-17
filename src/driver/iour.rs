@@ -6,7 +6,7 @@ use io_uring::cqueue::{more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
 use io_uring::squeue::Entry as SEntry;
 use io_uring::types::{Fd, SubmitArgs, Timespec};
-use io_uring::IoUring;
+use io_uring::{IoUring, Probe};
 
 pub trait Handler {
     /// Operation is completed
@@ -23,6 +23,7 @@ enum Change {
 
 pub struct DriverApi {
     batch: u64,
+    probe: Rc<Probe>,
     changes: Rc<RefCell<VecDeque<Change>>>,
 }
 
@@ -51,6 +52,11 @@ impl DriverApi {
             op_id: user_data as u64 | self.batch,
         });
     }
+
+    /// Get whether a specific io-uring opcode is supported.
+    pub fn is_supported(&self, opcode: u8) -> bool {
+        self.probe.is_supported(opcode)
+    }
 }
 
 /// Low-level driver of io-uring.
@@ -59,6 +65,7 @@ pub struct Driver {
     notifier: Notifier,
 
     hid: Cell<u64>,
+    probe: Rc<Probe>,
     changes: Rc<RefCell<VecDeque<Change>>>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
@@ -79,6 +86,9 @@ impl Driver {
             .setup_single_issuer()
             .build(capacity)?;
 
+        let mut probe = Probe::new();
+        ring.submitter().register_probe(&mut probe)?;
+
         let notifier = Notifier::new()?;
 
         #[allow(clippy::useless_conversion)]
@@ -96,6 +106,7 @@ impl Driver {
         Ok(Self {
             notifier,
             ring: RefCell::new(ring),
+            probe: Rc::new(probe),
             hid: Cell::new(0),
             changes: Rc::new(RefCell::new(VecDeque::new())),
             handlers: Cell::new(Some(Box::new(Vec::new()))),
@@ -117,6 +128,7 @@ impl Driver {
 
         let api = DriverApi {
             batch: id << 48,
+            probe: self.probe.clone(),
             changes: self.changes.clone(),
         };
         handlers.push(f(api));

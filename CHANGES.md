@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.5] - 2025-03-17
+
+* Add Probe::is_supported() api call for io-uring driver
+
 ## [0.1.4] - 2025-03-16
 
 * Do not create fd item for unregister-all
