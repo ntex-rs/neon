@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.6] - 2025-03-20
+
+* Redesign polling driver
+
 ## [0.1.5] - 2025-03-17
 
 * Add Probe::is_supported() api call for io-uring driver

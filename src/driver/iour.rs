@@ -127,7 +127,7 @@ impl Driver {
         let mut handlers = self.handlers.take().unwrap_or_default();
 
         let api = DriverApi {
-            batch: id << 48,
+            batch: id << Self::BATCH,
             probe: self.probe.clone(),
             changes: self.changes.clone(),
         };

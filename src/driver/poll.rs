@@ -1,37 +1,15 @@
-#![allow(clippy::type_complexity)]
-
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{cell::Cell, cell::RefCell, io, rc::Rc, sync::Arc};
 use std::{num::NonZeroUsize, time::Duration};
 
-use nohash_hasher::IntMap;
-use polling::{Event, Events, Poller};
+pub use polling::Event;
+use polling::{Events, Poller};
 
 use crate::pool::Dispatchable;
 
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-    struct Flags: u8 {
-        const NEW     = 0b0000_0001;
-        const CHANGED = 0b0000_0010;
-    }
-}
-
-/// The interest to poll a file descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Interest {
-    /// Represents a read operation.
-    Readable,
-    /// Represents a write operation.
-    Writable,
-}
-
 pub trait Handler {
     /// Submitted interest
-    fn readable(&mut self, id: usize);
-
-    /// Submitted interest
-    fn writable(&mut self, id: usize);
+    fn event(&mut self, id: usize, event: Event);
 
     /// Operation submission has failed
     fn error(&mut self, id: usize, err: io::Error);
@@ -40,136 +18,76 @@ pub trait Handler {
     fn commit(&mut self);
 }
 
-#[derive(Debug)]
-struct FdItem {
-    flags: Flags,
-    batch: usize,
-    read: Option<usize>,
-    write: Option<usize>,
-}
-
-impl FdItem {
-    fn new(batch: usize) -> Self {
-        Self {
-            batch,
-            read: None,
-            write: None,
-            flags: Flags::NEW,
-        }
-    }
-
-    fn register(&mut self, user_data: usize, interest: Interest) {
-        self.flags.insert(Flags::CHANGED);
-        match interest {
-            Interest::Readable => {
-                self.read = Some(user_data);
-            }
-            Interest::Writable => {
-                self.write = Some(user_data);
-            }
-        }
-    }
-
-    fn unregister(&mut self, int: Interest) {
-        let res = match int {
-            Interest::Readable => self.read.take(),
-            Interest::Writable => self.write.take(),
-        };
-        if res.is_some() {
-            self.flags.insert(Flags::CHANGED);
-        }
-    }
-
-    fn unregister_all(&mut self) {
-        if self.read.is_some() || self.write.is_some() {
-            self.flags.insert(Flags::CHANGED);
-        }
-
-        let _ = self.read.take();
-        let _ = self.write.take();
-    }
-
-    fn user_data(&mut self, interest: Interest) -> Option<usize> {
-        match interest {
-            Interest::Readable => self.read,
-            Interest::Writable => self.write,
-        }
-    }
-
-    fn event(&self, key: usize) -> Event {
-        let mut event = Event::none(key);
-        if self.read.is_some() {
-            event.readable = true;
-        }
-        if self.write.is_some() {
-            event.writable = true;
-        }
-        event
-    }
-}
-
 enum Change {
-    Register {
+    Attach {
         fd: RawFd,
-        batch: usize,
-        user_data: usize,
-        int: Interest,
+        event: Event,
+        user_data: u64,
     },
-    Unregister {
+    Detach {
         fd: RawFd,
-        batch: usize,
-        int: Interest,
+        batch: u64,
+        user_data: u32,
     },
-    UnregisterAll {
+    Modify {
         fd: RawFd,
+        user_data: u64,
+        event: Event,
     },
     Blocking(Box<dyn Dispatchable + Send>),
 }
 
 pub struct DriverApi {
-    batch: usize,
+    batch: u64,
     changes: Rc<RefCell<Vec<Change>>>,
 }
 
 impl DriverApi {
+    /// Attach an fd to the driver.
+    ///
+    /// `fd` must be attached to the driver before using register/unregister
+    /// methods.
+    pub fn attach(&self, fd: RawFd, user_data: u32, event: Option<Event>) {
+        let user_data = user_data as u64 | self.batch;
+
+        let event = event
+            .map(|mut ev| {
+                ev.key = user_data as usize;
+                ev
+            })
+            .unwrap_or_else(|| Event::new(user_data as usize, false, false));
+
+        self.changes.borrow_mut().push(Change::Attach {
+            fd,
+            event,
+            user_data,
+        });
+    }
+
+    /// Detach an fd from the driver.
+    pub fn detach(&self, fd: RawFd, user_data: u32) {
+        self.changes.borrow_mut().push(Change::Detach {
+            fd,
+            user_data,
+            batch: self.batch,
+        });
+    }
+
     /// Register interest for specified file descriptor.
-    pub fn register(&self, fd: RawFd, user_data: usize, int: Interest) {
+    pub fn modify(&self, fd: RawFd, user_data: u32, mut event: Event) {
         log::debug!(
-            "Register interest {:?} for {:?} user-data: {:?}",
-            int,
+            "Register event {:?} for {:?} user-data: {:?}",
+            event,
             fd,
             user_data
         );
-        self.change(Change::Register {
+        let user_data = user_data as u64 | self.batch;
+        event.key = user_data as usize;
+        self.changes.borrow_mut().push(Change::Modify {
             fd,
-            batch: self.batch,
+            event,
             user_data,
-            int,
         });
-    }
-
-    /// Unregister interest for specified file descriptor.
-    pub fn unregister(&self, fd: RawFd, int: Interest) {
-        log::debug!(
-            "Unregister interest {:?} for {:?} batch: {:?}",
-            int,
-            fd,
-            self.batch
-        );
-        self.change(Change::Unregister {
-            fd,
-            batch: self.batch,
-            int,
-        });
-    }
-
-    /// Unregister all interests.
-    pub fn unregister_all(&self, fd: RawFd) {
-        self.change(Change::UnregisterAll { fd });
-    }
-
-    fn change(&self, change: Change) {
-        self.changes.borrow_mut().push(change);
     }
 }
 
@@ -177,13 +95,16 @@ impl DriverApi {
 pub struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
-    registry: RefCell<IntMap<RawFd, FdItem>>,
-    hid: Cell<usize>,
+    hid: Cell<u64>,
     changes: Rc<RefCell<Vec<Change>>>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
 impl Driver {
+    const BATCH: u64 = 48;
+    const BATCH_MASK: u64 = 0xFFFF_0000_0000_0000;
+    const DATA_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
     pub fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New poll driver");
 
@@ -196,7 +117,6 @@ impl Driver {
         Ok(Self {
             poll: Arc::new(Poller::new()?),
             events: RefCell::new(events),
-            registry: RefCell::new(Default::default()),
             hid: Cell::new(0),
             changes: Rc::new(RefCell::new(Vec::with_capacity(16))),
             handlers: Cell::new(Some(Box::new(Vec::default()))),
@@ -217,7 +137,7 @@ impl Driver {
         let mut handlers = self.handlers.take().unwrap_or_default();
 
         let api = DriverApi {
-            batch: id,
+            batch: id << Self::BATCH,
             changes: self.changes.clone(),
         };
         handlers.push(f(api));
@@ -235,30 +155,21 @@ impl Driver {
                 return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
             }
         } else {
-            let mut registry = self.registry.borrow_mut();
             let mut handlers = self.handlers.take().unwrap();
             for event in events.iter() {
-                let fd = event.key as RawFd;
-                log::debug!("Event {:?} for {:?}", event, registry.get(&fd));
+                let key = event.key as u64;
+                let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                let user_data = (key & Self::DATA_MASK) as usize;
 
-                if let Some(item) = registry.get_mut(&fd) {
-                    if event.readable {
-                        if let Some(user_data) = item.user_data(Interest::Readable) {
-                            handlers[item.batch].readable(user_data)
-                        }
-                    }
-                    if event.writable {
-                        if let Some(user_data) = item.user_data(Interest::Writable) {
-                            handlers[item.batch].writable(user_data)
-                        }
-                    }
-                }
+                log::debug!("Event {:?} for {}:{}", event.key as RawFd, batch, user_data);
+
+                handlers[batch].event(user_data, event)
             }
             self.handlers.set(Some(handlers));
         }
 
         // apply changes
-        self.apply_changes()?;
+        self.apply_changes();
 
         // complete batch handling
         let mut handlers = self.handlers.take().unwrap();
@@ -266,90 +177,75 @@ impl Driver {
             handler.commit();
         }
         self.handlers.set(Some(handlers));
-        self.apply_changes()?;
+        self.apply_changes();
 
         // run user function
         f();
 
         // check if we have more changes from "run"
-        self.apply_changes()?;
+        self.apply_changes();
 
         Ok(())
     }
 
     /// Re-calc driver changes
-    fn apply_changes(&self) -> io::Result<()> {
+    fn apply_changes(&self) {
         let mut changes = self.changes.borrow_mut();
         if changes.is_empty() {
-            return Ok(());
+            return;
         }
         log::debug!("Apply driver changes, {:?}", changes.len());
 
-        let mut registry = self.registry.borrow_mut();
+        let mut handlers = self.handlers.take().unwrap();
 
-        for change in &mut *changes {
+        for change in changes.drain(..) {
             match change {
-                Change::Register {
+                Change::Attach {
+                    fd,
+                    event,
+                    user_data,
+                } => {
+                    if let Err(err) = unsafe { self.poll.add(fd, event) } {
+                        let batch =
+                            ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                        let user_data = (user_data & Self::DATA_MASK) as usize;
+                        handlers[batch].error(user_data, err);
+                    }
+                }
+                Change::Detach {
                     fd,
                     batch,
                     user_data,
-                    int,
                 } => {
-                    let item = registry.entry(*fd).or_insert_with(|| FdItem::new(*batch));
-                    item.register(*user_data, *int);
-                }
-                Change::Unregister { fd, batch, int } => {
-                    let item = registry.entry(*fd).or_insert_with(|| FdItem::new(*batch));
-                    item.unregister(*int);
-                }
-                Change::UnregisterAll { fd, .. } => {
-                    if let Some(item) = registry.get_mut(fd) {
-                        item.unregister_all();
+                    if let Err(err) =
+                        self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) })
+                    {
+                        handlers[(batch >> Self::BATCH) as usize]
+                            .error(user_data as usize, err);
                     }
                 }
-                _ => {}
-            }
-        }
-
-        for change in changes.drain(..) {
-            let fd = match change {
-                Change::Register { fd, .. } => Some(fd),
-                Change::Unregister { fd, .. } => Some(fd),
-                Change::UnregisterAll { fd, .. } => Some(fd),
+                Change::Modify {
+                    fd,
+                    event,
+                    user_data,
+                } => {
+                    let result = self
+                        .poll
+                        .modify(unsafe { BorrowedFd::borrow_raw(fd) }, event);
+                    if let Err(err) = result {
+                        let batch =
+                            ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                        let user_data = (user_data & Self::DATA_MASK) as usize;
+                        handlers[batch].error(user_data, err);
+                    }
+                }
                 Change::Blocking(f) => {
                     crate::Runtime::with_current(|rt| rt.schedule_blocking(f));
-                    None
-                }
-            };
-
-            if let Some(fd) = fd {
-                if let Some(item) = registry.get_mut(&fd) {
-                    if item.flags.contains(Flags::CHANGED) {
-                        item.flags.remove(Flags::CHANGED);
-
-                        let new = item.flags.contains(Flags::NEW);
-                        let renew_event = item.event(fd as usize);
-
-                        if !renew_event.readable && !renew_event.writable {
-                            registry.remove(&fd);
-                            if !new {
-                                self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) })?;
-                            }
-                        } else if new {
-                            item.flags.remove(Flags::NEW);
-                            unsafe { self.poll.add(fd, renew_event)? };
-                        } else {
-                            self.poll.modify(
-                                unsafe { BorrowedFd::borrow_raw(fd) },
-                                renew_event,
-                            )?;
-                        }
-                    }
                 }
             }
         }
 
-        Ok(())
+        self.handlers.set(Some(handlers));
     }
 
     pub(crate) fn push_blocking(
@@ -369,17 +265,6 @@ impl Driver {
 impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
         self.poll.as_raw_fd()
-    }
-}
-
-impl Drop for Driver {
-    fn drop(&mut self) {
-        for fd in self.registry.borrow().keys() {
-            unsafe {
-                let fd = BorrowedFd::borrow_raw(*fd);
-                self.poll.delete(fd).ok();
-            }
-        }
     }
 }
 
