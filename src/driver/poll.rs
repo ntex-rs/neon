@@ -1,5 +1,3 @@
-//#![allow(clippy::type_complexity)]
-
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{cell::Cell, cell::RefCell, io, rc::Rc, sync::Arc};
 use std::{num::NonZeroUsize, time::Duration};
