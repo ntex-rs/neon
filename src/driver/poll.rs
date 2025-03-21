@@ -13,9 +13,6 @@ pub trait Handler {
 
     /// Operation submission has failed
     fn error(&mut self, id: usize, err: io::Error);
-
-    /// All events are processed, process all updates
-    fn commit(&mut self);
 }
 
 enum Change {
@@ -155,6 +152,7 @@ impl Driver {
                 return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
             }
         } else {
+            // route events to handlers
             let mut handlers = self.handlers.take().unwrap();
             for event in events.iter() {
                 let key = event.key as u64;
@@ -162,22 +160,12 @@ impl Driver {
                 let user_data = (key & Self::DATA_MASK) as usize;
 
                 log::debug!("Event {:?} for {}:{}", event.key as RawFd, batch, user_data);
-
                 handlers[batch].event(user_data, event)
             }
             self.handlers.set(Some(handlers));
-        }
 
-        // apply changes
-        self.apply_changes();
-
-        // complete batch handling
-        let mut handlers = self.handlers.take().unwrap();
-        for handler in handlers.iter_mut() {
-            handler.commit();
+            self.apply_changes();
         }
-        self.handlers.set(Some(handlers));
-        self.apply_changes();
 
         // run user function
         f();

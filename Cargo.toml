@@ -1,6 +1,6 @@
 [package]
 name = "ntex-neon"
-version = "0.1.6"
+version = "0.1.7"
 description = "Async runtime for ntex"
 categories = ["asynchronous"]
 keywords = ["async", "runtime"]
@@ -29,9 +29,9 @@ targets = [
 ]
 
 [dependencies]
-async-task = "4.5.0"
+async-task = "4.5"
 bitflags = "2"
-cfg-if = "1.0.0"
+cfg-if = "1.0"
 crossbeam-queue = "0.3.8"
 fxhash = "0.2"
 log = "0.4"
