@@ -177,8 +177,6 @@ impl AsRawFd for Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         CURRENT_RUNTIME.set(self, || {
-            thread::sleep(Duration::from_millis(1250));
-
             while self.runnables.sync_runnables.pop().is_some() {}
             loop {
                 let runnable = self.runnables.local_runnables.borrow_mut().pop_front();

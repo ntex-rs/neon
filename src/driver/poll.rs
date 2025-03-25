@@ -150,6 +150,10 @@ impl Driver {
 
     /// Poll the driver and handle completed entries.
     pub fn poll(&self, wait_events: bool) -> io::Result<()> {
+        // route events to handlers
+        let mut handlers = self.handlers.take().unwrap();
+        self.apply_changes(&mut handlers);
+
         let mut events = self.events.borrow_mut();
         let timeout = if wait_events {
             None
@@ -159,8 +163,6 @@ impl Driver {
         self.poll.wait(&mut events, timeout)?;
 
         if !events.is_empty() {
-            // route events to handlers
-            let mut handlers = self.handlers.take().unwrap();
             for event in events.iter() {
                 let key = event.key as u64;
                 let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
@@ -169,29 +171,31 @@ impl Driver {
                 log::debug!("Event {:?} for {}:{}", event.key as RawFd, batch, user_data);
                 handlers[batch].event(user_data, event)
             }
+            self.apply_changes(&mut handlers);
+        }
 
-            // apply errors
-            let mut changes = self.changes.borrow_mut();
-            if !changes.is_empty() {
-                log::debug!("Apply driver errors, {:?}", changes.len());
-                for op in changes.drain(..) {
-                    match op {
-                        Change::Error {
-                            batch,
-                            user_data,
-                            error,
-                        } => handlers[batch].error(user_data as usize, error),
-                        Change::Blocking(f) => {
-                            let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
-                        }
+        self.handlers.set(Some(handlers));
+        Ok(())
+    }
+
+    fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {
+        // apply errors
+        let mut changes = self.changes.borrow_mut();
+        if !changes.is_empty() {
+            log::debug!("Apply driver errors, {:?}", changes.len());
+            for op in changes.drain(..) {
+                match op {
+                    Change::Error {
+                        batch,
+                        user_data,
+                        error,
+                    } => handlers[batch].error(user_data as usize, error),
+                    Change::Blocking(f) => {
+                        let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
                     }
                 }
             }
-
-            self.handlers.set(Some(handlers));
         }
-
-        Ok(())
     }
 
     /// Get notification handle
