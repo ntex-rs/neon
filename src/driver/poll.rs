@@ -16,7 +16,7 @@ pub trait Handler {
 pub(crate) fn spawn_blocking(
     _: &crate::Runtime,
     drv: &Driver,
-    f: Box<dyn crate::poll::Dispatchable + Send>,
+    f: Box<dyn crate::pool::Dispatchable + Send>,
 ) {
     drv.changes.borrow_mut().push(Change::Blocking(f));
 }
@@ -27,7 +27,7 @@ enum Change {
         user_data: u32,
         error: io::Error,
     },
-    Blocking(Box<dyn crate::poll::Dispatchable + Send>),
+    Blocking(Box<dyn crate::pool::Dispatchable + Send>),
 }
 
 pub struct DriverApi {
