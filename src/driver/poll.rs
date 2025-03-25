@@ -13,17 +13,28 @@ pub trait Handler {
     fn error(&mut self, id: usize, err: io::Error);
 }
 
-struct OpError {
-    batch: usize,
-    user_data: u32,
-    error: io::Error,
+pub(crate) fn spawn_blocking(
+    _: &crate::Runtime,
+    drv: &Driver,
+    f: Box<dyn crate::poll::Dispatchable + Send>,
+) {
+    drv.changes.borrow_mut().push(Change::Blocking(f));
+}
+
+enum Change {
+    Error {
+        batch: usize,
+        user_data: u32,
+        error: io::Error,
+    },
+    Blocking(Box<dyn crate::poll::Dispatchable + Send>),
 }
 
 pub struct DriverApi {
     id: usize,
     batch: u64,
     poll: Arc<Poller>,
-    changes: Rc<RefCell<Vec<OpError>>>,
+    changes: Rc<RefCell<Vec<Change>>>,
 }
 
 impl DriverApi {
@@ -42,7 +53,7 @@ impl DriverApi {
             .unwrap_or_else(|| Event::new(user_data as usize, false, false));
 
         if let Err(err) = unsafe { self.poll.add(fd, event) } {
-            self.changes.borrow_mut().push(OpError {
+            self.changes.borrow_mut().push(Change::Error {
                 batch: self.id,
                 user_data: id,
                 error: err,
@@ -53,7 +64,7 @@ impl DriverApi {
     /// Detach an fd from the driver.
     pub fn detach(&self, fd: RawFd, id: u32) {
         if let Err(err) = self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) }) {
-            self.changes.borrow_mut().push(OpError {
+            self.changes.borrow_mut().push(Change::Error {
                 batch: self.id,
                 user_data: id,
                 error: err,
@@ -72,7 +83,7 @@ impl DriverApi {
             .poll
             .modify(unsafe { BorrowedFd::borrow_raw(fd) }, event);
         if let Err(err) = result {
-            self.changes.borrow_mut().push(OpError {
+            self.changes.borrow_mut().push(Change::Error {
                 batch: self.id,
                 user_data: id,
                 error: err,
@@ -86,7 +97,7 @@ pub struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
     hid: Cell<u64>,
-    changes: Rc<RefCell<Vec<OpError>>>,
+    changes: Rc<RefCell<Vec<Change>>>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
@@ -164,7 +175,16 @@ impl Driver {
             if !changes.is_empty() {
                 log::debug!("Apply driver errors, {:?}", changes.len());
                 for op in changes.drain(..) {
-                    handlers[op.batch].error(op.user_data as usize, op.error);
+                    match op {
+                        Change::Error {
+                            batch,
+                            user_data,
+                            error,
+                        } => handlers[batch].error(user_data as usize, error),
+                        Change::Blocking(f) => {
+                            let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
+                        }
+                    }
                 }
             }
 

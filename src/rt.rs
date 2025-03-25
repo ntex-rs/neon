@@ -23,7 +23,7 @@ pub type JoinHandle<T> = oneshot::Receiver<Result<T, Box<dyn Any + Send>>>;
 pub struct Runtime {
     driver: Driver,
     runnables: Arc<RunnableQueue>,
-    pool: ThreadPool,
+    pub(crate) pool: ThreadPool,
     values: RefCell<HashMap<TypeId, Box<dyn Any>, fxhash::FxBuildHasher>>,
 }
 
@@ -131,10 +131,14 @@ impl Runtime {
         R: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        let _ = self.pool.dispatch(Box::new(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-            let _ = tx.send(result);
-        }));
+        crate::driver::spawn_blocking(
+            self,
+            &self.driver,
+            Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                let _ = tx.send(result);
+            }),
+        );
 
         rx
     }

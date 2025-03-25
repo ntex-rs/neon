@@ -21,6 +21,14 @@ enum Change {
     Cancel { op_id: u64 },
 }
 
+pub(crate) fn spawn_blocking(
+    rt: &crate::Runtime,
+    _: &Driver,
+    f: Box<dyn crate::pool::Dispatchable + Send>,
+) {
+    let _ = rt.pool.dispatch(f);
+}
+
 pub struct DriverApi {
     batch: u64,
     probe: Rc<Probe>,
