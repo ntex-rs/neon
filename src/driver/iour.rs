@@ -81,11 +81,12 @@ impl Driver {
     pub fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New io-uring driver");
 
-        let mut ring = IoUring::builder()
-            //.setup_coop_taskrun()
-            //.setup_single_issuer()
-            .build(capacity)?;
+        #[allow(unused_mut)]
+        let mut builder = IoUring::builder();
+        #[cfg(not(feature = "io-uring-compat"))]
+        let builder = builder.setup_coop_taskrun().setup_single_issuer();
 
+        let mut ring = builder.build(capacity)?;
         let mut probe = Probe::new();
         ring.submitter().register_probe(&mut probe)?;
 

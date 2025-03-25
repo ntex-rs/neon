@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.9] - 2025-03-25
+
+* Add old io-uring version compat
+
 ## [0.1.8] - 2025-03-25
 
 * More polling driver simplifications

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-neon"
-version = "0.1.8"
+version = "0.1.9"
 description = "Async runtime for ntex"
 categories = ["asynchronous"]
 keywords = ["async", "runtime"]
@@ -78,3 +78,4 @@ windows-sys = { version = "0.52.0", features = ["Win32_UI_WindowsAndMessaging"] 
 default = []
 polling = ["dep:polling"]
 io-uring = ["dep:io-uring"]
+io-uring-compat = []
