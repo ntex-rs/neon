@@ -5,8 +5,6 @@ use std::{num::NonZeroUsize, time::Duration};
 pub use polling::Event;
 use polling::{Events, Poller};
 
-use crate::pool::Dispatchable;
-
 pub trait Handler {
     /// Submitted interest
     fn event(&mut self, id: usize, event: Event);
@@ -15,28 +13,17 @@ pub trait Handler {
     fn error(&mut self, id: usize, err: io::Error);
 }
 
-enum Change {
-    Attach {
-        fd: RawFd,
-        event: Event,
-        user_data: u64,
-    },
-    Detach {
-        fd: RawFd,
-        batch: u64,
-        user_data: u32,
-    },
-    Modify {
-        fd: RawFd,
-        user_data: u64,
-        event: Event,
-    },
-    Blocking(Box<dyn Dispatchable + Send>),
+struct OpError {
+    batch: usize,
+    user_data: u32,
+    error: io::Error,
 }
 
 pub struct DriverApi {
+    id: usize,
     batch: u64,
-    changes: Rc<RefCell<Vec<Change>>>,
+    poll: Arc<Poller>,
+    changes: Rc<RefCell<Vec<OpError>>>,
 }
 
 impl DriverApi {
@@ -44,8 +31,8 @@ impl DriverApi {
     ///
     /// `fd` must be attached to the driver before using register/unregister
     /// methods.
-    pub fn attach(&self, fd: RawFd, user_data: u32, event: Option<Event>) {
-        let user_data = user_data as u64 | self.batch;
+    pub fn attach(&self, fd: RawFd, id: u32, event: Option<Event>) {
+        let user_data = id as u64 | self.batch;
 
         let event = event
             .map(|mut ev| {
@@ -54,37 +41,43 @@ impl DriverApi {
             })
             .unwrap_or_else(|| Event::new(user_data as usize, false, false));
 
-        self.changes.borrow_mut().push(Change::Attach {
-            fd,
-            event,
-            user_data,
-        });
+        if let Err(err) = unsafe { self.poll.add(fd, event) } {
+            self.changes.borrow_mut().push(OpError {
+                batch: self.id,
+                user_data: id,
+                error: err,
+            })
+        }
     }
 
     /// Detach an fd from the driver.
-    pub fn detach(&self, fd: RawFd, user_data: u32) {
-        self.changes.borrow_mut().push(Change::Detach {
-            fd,
-            user_data,
-            batch: self.batch,
-        });
+    pub fn detach(&self, fd: RawFd, id: u32) {
+        if let Err(err) = self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) }) {
+            self.changes.borrow_mut().push(OpError {
+                batch: self.id,
+                user_data: id,
+                error: err,
+            })
+        }
     }
 
     /// Register interest for specified file descriptor.
-    pub fn modify(&self, fd: RawFd, user_data: u32, mut event: Event) {
-        log::debug!(
-            "Register event {:?} for {:?} user-data: {:?}",
-            event,
-            fd,
-            user_data
-        );
-        let user_data = user_data as u64 | self.batch;
+    pub fn modify(&self, fd: RawFd, id: u32, mut event: Event) {
+        log::debug!("Register event {:?} for {:?} id: {:?}", event, fd, id);
+
+        let user_data = id as u64 | self.batch;
         event.key = user_data as usize;
-        self.changes.borrow_mut().push(Change::Modify {
-            fd,
-            event,
-            user_data,
-        });
+
+        let result = self
+            .poll
+            .modify(unsafe { BorrowedFd::borrow_raw(fd) }, event);
+        if let Err(err) = result {
+            self.changes.borrow_mut().push(OpError {
+                batch: self.id,
+                user_data: id,
+                error: err,
+            })
+        }
     }
 }
 
@@ -93,7 +86,7 @@ pub struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
     hid: Cell<u64>,
-    changes: Rc<RefCell<Vec<Change>>>,
+    changes: Rc<RefCell<Vec<OpError>>>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
@@ -134,8 +127,10 @@ impl Driver {
         let mut handlers = self.handlers.take().unwrap_or_default();
 
         let api = DriverApi {
+            id: id as usize,
             batch: id << Self::BATCH,
             changes: self.changes.clone(),
+            poll: self.poll.clone(),
         };
         handlers.push(f(api));
         self.hid.set(id + 1);
@@ -143,12 +138,17 @@ impl Driver {
     }
 
     /// Poll the driver and handle completed entries.
-    pub fn poll<F: FnOnce()>(&self, timeout: Option<Duration>, f: F) -> io::Result<()> {
+    pub fn poll(&self, wait_events: bool) -> io::Result<()> {
         let mut events = self.events.borrow_mut();
+        let timeout = if wait_events {
+            None
+        } else {
+            Some(Duration::ZERO)
+        };
         self.poll.wait(&mut events, timeout)?;
 
         if events.is_empty() {
-            if timeout.is_some() && timeout != Some(Duration::ZERO) {
+            if timeout != Some(Duration::ZERO) {
                 return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
             }
         } else {
@@ -162,86 +162,20 @@ impl Driver {
                 log::debug!("Event {:?} for {}:{}", event.key as RawFd, batch, user_data);
                 handlers[batch].event(user_data, event)
             }
-            self.handlers.set(Some(handlers));
 
-            self.apply_changes();
-        }
-
-        // run user function
-        f();
-
-        // check if we have more changes from "run"
-        self.apply_changes();
-
-        Ok(())
-    }
-
-    /// Re-calc driver changes
-    fn apply_changes(&self) {
-        let mut changes = self.changes.borrow_mut();
-        if changes.is_empty() {
-            return;
-        }
-        log::debug!("Apply driver changes, {:?}", changes.len());
-
-        let mut handlers = self.handlers.take().unwrap();
-
-        for change in changes.drain(..) {
-            match change {
-                Change::Attach {
-                    fd,
-                    event,
-                    user_data,
-                } => {
-                    if let Err(err) = unsafe { self.poll.add(fd, event) } {
-                        let batch =
-                            ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
-                        let user_data = (user_data & Self::DATA_MASK) as usize;
-                        handlers[batch].error(user_data, err);
-                    }
-                }
-                Change::Detach {
-                    fd,
-                    batch,
-                    user_data,
-                } => {
-                    if let Err(err) =
-                        self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) })
-                    {
-                        handlers[(batch >> Self::BATCH) as usize]
-                            .error(user_data as usize, err);
-                    }
-                }
-                Change::Modify {
-                    fd,
-                    event,
-                    user_data,
-                } => {
-                    let result = self
-                        .poll
-                        .modify(unsafe { BorrowedFd::borrow_raw(fd) }, event);
-                    if let Err(err) = result {
-                        let batch =
-                            ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
-                        let user_data = (user_data & Self::DATA_MASK) as usize;
-                        handlers[batch].error(user_data, err);
-                    }
-                }
-                Change::Blocking(f) => {
-                    crate::Runtime::with_current(|rt| rt.schedule_blocking(f));
+            // apply errors
+            let mut changes = self.changes.borrow_mut();
+            if !changes.is_empty() {
+                log::debug!("Apply driver errors, {:?}", changes.len());
+                for op in changes.drain(..) {
+                    handlers[op.batch].error(op.user_data as usize, op.error);
                 }
             }
+
+            self.handlers.set(Some(handlers));
         }
 
-        self.handlers.set(Some(handlers));
-    }
-
-    pub(crate) fn push_blocking(
-        &self,
-        _: &crate::Runtime,
-        f: Box<dyn Dispatchable + Send>,
-    ) {
-        self.changes.borrow_mut().push(Change::Blocking(f));
+        Ok(())
     }
 
     /// Get notification handle

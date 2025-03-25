@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.8] - 2025-03-25
+
+* More polling driver simplifications
+
 ## [0.1.7] - 2025-03-21
 
 * Simplify polling driver

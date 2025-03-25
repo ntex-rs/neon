@@ -86,15 +86,20 @@ impl Runtime {
             let mut result = None;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
-            self.runnables.run();
             loop {
+                self.runnables.run();
                 if let Some(result) = result.take() {
                     return result;
                 }
 
-                self.poll(self.runnables.has_tasks(), || {
-                    self.runnables.run();
-                });
+                if let Err(e) = self.driver.poll(!self.runnables.has_tasks()) {
+                    match e.kind() {
+                        io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => {
+                            log::debug!("expected error: {e}");
+                        }
+                        _ => panic!("{e:?}"),
+                    }
+                }
             }
         })
     }
@@ -132,36 +137,12 @@ impl Runtime {
         R: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        self.driver.push_blocking(
-            self,
-            Box::new(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-                let _ = tx.send(result);
-            }),
-        );
+        let _ = self.pool.dispatch(Box::new(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            let _ = tx.send(result);
+        }));
 
         rx
-    }
-
-    pub(crate) fn schedule_blocking(&self, f: Box<dyn crate::pool::Dispatchable + Send>) {
-        let _ = self.pool.dispatch(f);
-    }
-
-    fn poll<F: FnOnce()>(&self, has_tasks: bool, f: F) {
-        let timeout = if has_tasks {
-            Some(Duration::ZERO)
-        } else {
-            None
-        };
-
-        if let Err(e) = self.driver.poll(timeout, f) {
-            match e.kind() {
-                io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => {
-                    log::debug!("expected error: {e}");
-                }
-                _ => panic!("{e:?}"),
-            }
-        }
     }
 
     /// Get a type previously inserted to this runtime or create new one.

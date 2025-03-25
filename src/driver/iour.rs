@@ -10,9 +10,9 @@ use io_uring::{IoUring, Probe};
 
 pub trait Handler {
     /// Operation is completed
-    fn completed(&mut self, user_data: usize, flags: u32, result: io::Result<i32>);
+    fn completed(&mut self, id: usize, flags: u32, result: io::Result<i32>);
 
-    fn canceled(&mut self, user_data: usize);
+    fn canceled(&mut self, id: usize);
 }
 
 #[derive(Debug)]
@@ -209,7 +209,7 @@ impl Driver {
     }
 
     /// Poll the driver and handle completed operations.
-    pub fn poll<F: FnOnce()>(&self, timeout: Option<Duration>, f: F) -> io::Result<()> {
+    pub fn poll(&self, wait_events: bool) -> io::Result<()> {
         let has_more = self.apply_changes();
         let poll_result = self.poll_completions();
 
@@ -217,12 +217,15 @@ impl Driver {
             if has_more {
                 self.submit_auto(Some(Duration::ZERO))?;
             } else {
+                let timeout = if wait_events {
+                    None
+                } else {
+                    Some(Duration::ZERO)
+                };
                 self.submit_auto(timeout)?;
             }
             self.poll_completions();
         }
-
-        f();
 
         Ok(())
     }
@@ -231,8 +234,7 @@ impl Driver {
         let mut ring = self.ring.borrow_mut();
         let mut cqueue = ring.completion();
         cqueue.sync();
-        let has_entry = !cqueue.is_empty();
-        if !has_entry {
+        if cqueue.is_empty() {
             return false;
         }
         let mut handlers = self.handlers.take().unwrap();
@@ -266,14 +268,6 @@ impl Driver {
         }
         self.handlers.set(Some(handlers));
         true
-    }
-
-    pub(crate) fn push_blocking(
-        &self,
-        rt: &crate::Runtime,
-        f: Box<dyn crate::pool::Dispatchable + Send>,
-    ) {
-        rt.schedule_blocking(f);
     }
 
     /// Get notification handle for this driver

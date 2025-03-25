@@ -1,12 +1,12 @@
 [package]
 name = "ntex-neon"
-version = "0.1.7"
+version = "0.1.8"
 description = "Async runtime for ntex"
 categories = ["asynchronous"]
 keywords = ["async", "runtime"]
 authors = ["ntex contributors <team@ntex.rs>"]
-repository = "https://github.com/ntex-rs/ntex"
-documentation = "https://docs.rs/ntex/"
+repository = "https://github.com/ntex-rs/neon"
+documentation = "https://docs.rs/ntex-neon/"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 rust-version = "1.75"
@@ -30,13 +30,15 @@ targets = [
 
 [dependencies]
 async-task = "4.5"
-bitflags = "2"
 cfg-if = "1.0"
 crossbeam-queue = "0.3.8"
+crossbeam-channel = "0.5.8"
 fxhash = "0.2"
 log = "0.4"
 oneshot = { version = "0.1", default-features = false, features = ["async"] }
 scoped-tls = "1.0.1"
+
+# remove when ntex-net update socket2 dependency
 socket2 = { version = "0.5.6", features = ["all"] }
 
 # Windows specific dependencies
@@ -57,7 +59,6 @@ windows-sys = { version = "0.52.0", features = [
 
 # Unix specific dependencies
 [target.'cfg(unix)'.dependencies]
-crossbeam-channel = "0.5.8"
 libc = "0.2.164"
 polling = "3.3.0"
 
