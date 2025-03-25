@@ -1,10 +1,9 @@
 #![allow(clippy::type_complexity)]
 use std::any::{Any, TypeId};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd, RawFd};
-use std::{
-    cell::Cell, cell::RefCell, future::Future, io, sync::Arc, thread, time::Duration,
-};
+use std::{future::Future, io, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
@@ -93,12 +92,7 @@ impl Runtime {
                 }
 
                 if let Err(e) = self.driver.poll(!self.runnables.has_tasks()) {
-                    match e.kind() {
-                        io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => {
-                            log::debug!("expected error: {e}");
-                        }
-                        _ => panic!("{e:?}"),
-                    }
+                    panic!("{e:?}")
                 }
             }
         })
@@ -179,6 +173,8 @@ impl AsRawFd for Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         CURRENT_RUNTIME.set(self, || {
+            thread::sleep(Duration::from_millis(250));
+
             while self.runnables.sync_runnables.pop().is_some() {}
             loop {
                 let runnable = self.runnables.local_runnables.borrow_mut().pop_front();

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.10] - 2025-03-25
+
+* Do not return error on timeout
+
 ## [0.1.9] - 2025-03-25
 
 * Add old io-uring version compat

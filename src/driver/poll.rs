@@ -147,11 +147,7 @@ impl Driver {
         };
         self.poll.wait(&mut events, timeout)?;
 
-        if events.is_empty() {
-            if timeout != Some(Duration::ZERO) {
-                return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
-            }
-        } else {
+        if !events.is_empty() {
             // route events to handlers
             let mut handlers = self.handlers.take().unwrap();
             for event in events.iter() {
