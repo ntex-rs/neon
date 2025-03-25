@@ -38,9 +38,6 @@ log = "0.4"
 oneshot = { version = "0.1", default-features = false, features = ["async"] }
 scoped-tls = "1.0.1"
 
-# remove when ntex-net update socket2 dependency
-socket2 = { version = "0.5.6", features = ["all"] }
-
 # Windows specific dependencies
 [target.'cfg(windows)'.dependencies]
 aligned-array = "1.0.1"
