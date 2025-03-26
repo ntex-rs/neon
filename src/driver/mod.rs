@@ -36,10 +36,7 @@ impl DriverType {
     }
 
     pub const fn is_polling(&self) -> bool {
-        match self {
-            DriverType::Poll => true,
-            DriverType::IoUring => false,
-        }
+        matches!(self, &DriverType::Poll)
     }
 }
 
@@ -99,58 +96,4 @@ macro_rules! syscall {
             Ok(res)
         }
     }};
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! impl_raw_fd {
-    ($t:ty, $it:ty, $inner:ident) => {
-        impl $crate::driver::AsRawFd for $t {
-            fn as_raw_fd(&self) -> $crate::driver::RawFd {
-                self.$inner.as_raw_fd()
-            }
-        }
-        #[cfg(unix)]
-        impl std::os::fd::FromRawFd for $t {
-            unsafe fn from_raw_fd(fd: $crate::driver::RawFd) -> Self {
-                Self {
-                    $inner: std::os::fd::FromRawFd::from_raw_fd(fd),
-                }
-            }
-        }
-    };
-    ($t:ty, $it:ty, $inner:ident,file) => {
-        $crate::impl_raw_fd!($t, $it, $inner);
-        #[cfg(windows)]
-        impl std::os::windows::io::FromRawHandle for $t {
-            unsafe fn from_raw_handle(handle: std::os::windows::io::RawHandle) -> Self {
-                Self {
-                    $inner: std::os::windows::io::FromRawHandle::from_raw_handle(handle),
-                }
-            }
-        }
-        #[cfg(windows)]
-        impl std::os::windows::io::AsRawHandle for $t {
-            fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
-                self.$inner.as_raw_handle()
-            }
-        }
-    };
-    ($t:ty, $it:ty, $inner:ident,socket) => {
-        $crate::impl_raw_fd!($t, $it, $inner);
-        #[cfg(windows)]
-        impl std::os::windows::io::FromRawSocket for $t {
-            unsafe fn from_raw_socket(sock: std::os::windows::io::RawSocket) -> Self {
-                Self {
-                    $inner: std::os::windows::io::FromRawSocket::from_raw_socket(sock),
-                }
-            }
-        }
-        #[cfg(windows)]
-        impl std::os::windows::io::AsRawSocket for $t {
-            fn as_raw_socket(&self) -> std::os::windows::io::RawSocket {
-                self.$inner.as_raw_socket()
-            }
-        }
-    };
 }
