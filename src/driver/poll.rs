@@ -159,9 +159,6 @@ impl Driver {
         self.poll.wait(&mut events, timeout)?;
 
         let mut handlers = self.handlers.take().unwrap();
-        if has_changes {
-            self.apply_changes(&mut handlers);
-        }
         for event in events.iter() {
             let key = event.key as u64;
             let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
