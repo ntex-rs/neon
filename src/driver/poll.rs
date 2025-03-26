@@ -149,12 +149,18 @@ impl Driver {
 
     /// Poll the driver and handle completed entries.
     pub fn poll(&self, wait_events: bool) -> io::Result<()> {
-        let mut events = self.events.borrow_mut();
         let has_changes = !self.changes.borrow().is_empty();
-        let timeout = if !wait_events || has_changes {
-            Some(Duration::ZERO)
-        } else {
+        if has_changes {
+            let mut handlers = self.handlers.take().unwrap();
+            self.apply_changes(&mut handlers);
+            self.handlers.set(Some(handlers));
+        }
+
+        let mut events = self.events.borrow_mut();
+        let timeout = if wait_events {
             None
+        } else {
+            Some(Duration::ZERO)
         };
         self.poll.wait(&mut events, timeout)?;
 
