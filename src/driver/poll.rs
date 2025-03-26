@@ -43,14 +43,14 @@ impl DriverApi {
     /// `fd` must be attached to the driver before using register/unregister
     /// methods.
     pub fn attach(&self, fd: RawFd, id: u32, event: Option<Event>) {
-        let user_data = id as u64 | self.batch;
-
-        let event = event
-            .map(|mut ev| {
-                ev.key = user_data as usize;
+        let key = (id as u64 | self.batch) as usize;
+        let event = event.map_or_else(
+            || Event::none(key),
+            |mut ev| {
+                ev.key = key;
                 ev
-            })
-            .unwrap_or_else(|| Event::new(user_data as usize, false, false));
+            },
+        );
 
         if let Err(err) = unsafe { self.poll.add(fd, event) } {
             self.changes.borrow_mut().push(Change::Error {
@@ -76,8 +76,7 @@ impl DriverApi {
     pub fn modify(&self, fd: RawFd, id: u32, mut event: Event) {
         log::debug!("Register event {:?} for {:?} id: {:?}", event, fd, id);
 
-        let user_data = id as u64 | self.batch;
-        event.key = user_data as usize;
+        event.key = (id as u64 | self.batch) as usize;
 
         let result = self
             .poll
@@ -96,8 +95,8 @@ impl DriverApi {
 pub struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
-    hid: Cell<u64>,
     changes: Rc<RefCell<Vec<Change>>>,
+    hid: Cell<u64>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
@@ -116,9 +115,9 @@ impl Driver {
         };
 
         Ok(Self {
+            hid: Cell::new(0),
             poll: Arc::new(Poller::new()?),
             events: RefCell::new(events),
-            hid: Cell::new(0),
             changes: Rc::new(RefCell::new(Vec::with_capacity(16))),
             handlers: Cell::new(Some(Box::new(Vec::default()))),
         })
@@ -140,8 +139,8 @@ impl Driver {
         let api = DriverApi {
             id: id as usize,
             batch: id << Self::BATCH,
-            changes: self.changes.clone(),
             poll: self.poll.clone(),
+            changes: self.changes.clone(),
         };
         handlers.push(f(api));
         self.hid.set(id + 1);
@@ -150,49 +149,39 @@ impl Driver {
 
     /// Poll the driver and handle completed entries.
     pub fn poll(&self, wait_events: bool) -> io::Result<()> {
-        // route events to handlers
-        let mut handlers = self.handlers.take().unwrap();
-        self.apply_changes(&mut handlers);
-
         let mut events = self.events.borrow_mut();
-        let timeout = if wait_events {
-            None
-        } else {
+        let timeout = if !wait_events || !self.changes.borrow().is_empty() {
             Some(Duration::ZERO)
+        } else {
+            None
         };
         self.poll.wait(&mut events, timeout)?;
 
-        if !events.is_empty() {
-            for event in events.iter() {
-                let key = event.key as u64;
-                let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
-                let user_data = (key & Self::DATA_MASK) as usize;
-
-                log::debug!("Event {:?} for {}:{}", event.key as RawFd, batch, user_data);
-                handlers[batch].event(user_data, event)
-            }
-            self.apply_changes(&mut handlers);
+        let mut handlers = self.handlers.take().unwrap();
+        for event in events.iter() {
+            let key = event.key as u64;
+            let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
+            handlers[batch].event((key & Self::DATA_MASK) as usize, event)
         }
-
+        self.apply_changes(&mut handlers);
         self.handlers.set(Some(handlers));
         Ok(())
     }
 
     fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {
-        // apply errors
         let mut changes = self.changes.borrow_mut();
-        if !changes.is_empty() {
-            log::debug!("Apply driver errors, {:?}", changes.len());
-            for op in changes.drain(..) {
-                match op {
-                    Change::Error {
-                        batch,
-                        user_data,
-                        error,
-                    } => handlers[batch].error(user_data as usize, error),
-                    Change::Blocking(f) => {
-                        let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
-                    }
+        if log::log_enabled!(log::Level::Debug) && !changes.is_empty() {
+            log::debug!("Apply driver changes, {:?}", changes.len());
+        }
+        for op in changes.drain(..) {
+            match op {
+                Change::Error {
+                    batch,
+                    user_data,
+                    error,
+                } => handlers[batch].error(user_data as usize, error),
+                Change::Blocking(f) => {
+                    let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
                 }
             }
         }

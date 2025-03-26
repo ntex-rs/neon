@@ -1,15 +1,12 @@
-#![allow(clippy::type_complexity)]
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
-use std::os::fd::{AsRawFd, RawFd};
-use std::{future::Future, io, sync::Arc, thread, time::Duration};
+use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
 
-use crate::driver::{Driver, NotifyHandle};
-use crate::pool::ThreadPool;
+use crate::{driver::Driver, driver::NotifyHandle, pool::ThreadPool};
 
 scoped_tls::scoped_thread_local!(static CURRENT_RUNTIME: Runtime);
 
@@ -86,13 +83,13 @@ impl Runtime {
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
             loop {
-                self.runnables.run();
+                let more_tasks = self.runnables.run();
                 if let Some(result) = result.take() {
                     return result;
                 }
 
-                if let Err(e) = self.driver.poll(!self.runnables.has_tasks()) {
-                    panic!("{e:?}")
+                if let Err(e) = self.driver.poll(!more_tasks) {
+                    panic!("Failed to poll driver {e:?}")
                 }
             }
         })
@@ -168,8 +165,8 @@ impl Runtime {
     }
 }
 
-impl AsRawFd for Runtime {
-    fn as_raw_fd(&self) -> RawFd {
+impl fd::AsRawFd for Runtime {
+    fn as_raw_fd(&self) -> fd::RawFd {
         self.driver.as_raw_fd()
     }
 }
@@ -239,16 +236,18 @@ impl RunnableQueue {
         if self.id == thread::current().id() {
             self.local_runnables.borrow_mut().push_back(runnable);
             if self.idle.get() {
-                let _ = handle.notify();
+                handle.notify().ok();
+                self.idle.set(false);
             }
         } else {
-            self.sync_runnables.push(runnable);
             handle.notify().ok();
+            self.sync_runnables.push(runnable);
         }
     }
 
-    fn run(&self) {
+    fn run(&self) -> bool {
         self.idle.set(false);
+
         for _ in 0..self.event_interval {
             let task = self.local_runnables.borrow_mut().pop_front();
             if let Some(task) = task {
@@ -268,10 +267,8 @@ impl RunnableQueue {
             break;
         }
         self.idle.set(true);
-    }
 
-    fn has_tasks(&self) -> bool {
-        !(self.local_runnables.borrow().is_empty() && self.sync_runnables.is_empty())
+        !self.local_runnables.borrow().is_empty() || !self.sync_runnables.is_empty()
     }
 }
 
