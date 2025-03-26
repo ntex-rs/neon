@@ -35,7 +35,7 @@ crossbeam-queue = "0.3.8"
 crossbeam-channel = "0.5.8"
 fxhash = "0.2"
 log = "0.4"
-oneshot = { version = "0.1", default-features = false, features = ["async"] }
+oneshot = "0.1"
 scoped-tls = "1.0.1"
 
 # Windows specific dependencies
