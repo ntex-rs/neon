@@ -42,7 +42,8 @@ impl DriverApi {
     ///
     /// `fd` must be attached to the driver before using register/unregister
     /// methods.
-    pub fn attach(&self, fd: RawFd, id: u32, event: Option<Event>) {
+    pub fn attach(&self, tag: &'static str, fd: RawFd, id: u32, event: Option<Event>) {
+        log::debug!("{}: Attach FD {:?} id: {}", tag, fd, id);
         let key = (id as u64 | self.batch) as usize;
         let event = event.map_or_else(
             || Event::none(key),
@@ -62,7 +63,8 @@ impl DriverApi {
     }
 
     /// Detach an fd from the driver.
-    pub fn detach(&self, fd: RawFd, id: u32) {
+    pub fn detach(&self, tag: &'static str, fd: RawFd, id: u32) {
+        log::debug!("{}: Detach FD {:?} id: {}", tag, fd, id);
         if let Err(err) = self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) }) {
             self.changes.borrow_mut().push(Change::Error {
                 batch: self.id,
@@ -73,8 +75,14 @@ impl DriverApi {
     }
 
     /// Register interest for specified file descriptor.
-    pub fn modify(&self, fd: RawFd, id: u32, mut event: Event) {
-        log::debug!("Register event {:?} for {:?} id: {:?}", event, fd, id);
+    pub fn modify(&self, tag: &'static str, fd: RawFd, id: u32, mut event: Event) {
+        log::debug!(
+            "{}: Register event {:?} for {:?} id: {:?}",
+            tag,
+            event,
+            fd,
+            id
+        );
 
         event.key = (id as u64 | self.batch) as usize;
 

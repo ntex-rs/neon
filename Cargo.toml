@@ -1,6 +1,6 @@
 [package]
 name = "ntex-neon"
-version = "0.1.12"
+version = "0.1.13"
 description = "Async runtime for ntex"
 categories = ["asynchronous"]
 keywords = ["async", "runtime"]
