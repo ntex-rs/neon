@@ -254,7 +254,6 @@ impl Driver {
             match user_data {
                 Self::CANCEL => {}
                 Self::NOTIFY => {
-                    // log::debug!("------ NOTIFY -------");
                     let flags = entry.flags();
                     debug_assert!(more(flags));
                     notify = true;
