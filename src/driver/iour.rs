@@ -220,40 +220,44 @@ impl Driver {
     /// Poll the driver and handle completed operations.
     pub fn poll(&self, wait_events: bool) -> io::Result<()> {
         let has_more = self.apply_changes();
-        let poll_result = self.poll_completions();
+        let (poll_result, notify) = self.poll_completions();
 
         if !poll_result || has_more {
             if has_more {
                 self.submit_auto(Some(Duration::ZERO))?;
-            } else {
+                self.poll_completions();
+            } else if !notify {
                 let timeout = if wait_events {
                     None
                 } else {
                     Some(Duration::ZERO)
                 };
                 self.submit_auto(timeout)?;
+                self.poll_completions();
             }
-            self.poll_completions();
         }
 
         Ok(())
     }
 
-    fn poll_completions(&self) -> bool {
+    fn poll_completions(&self) -> (bool, bool) {
         let mut ring = self.ring.borrow_mut();
         let mut cqueue = ring.completion();
         cqueue.sync();
         if cqueue.is_empty() {
-            return false;
+            return (false, false);
         }
+        let mut notify = false;
         let mut handlers = self.handlers.take().unwrap();
         for entry in cqueue {
             let user_data = entry.user_data();
             match user_data {
                 Self::CANCEL => {}
                 Self::NOTIFY => {
+                    // log::debug!("------ NOTIFY -------");
                     let flags = entry.flags();
                     debug_assert!(more(flags));
+                    notify = true;
                     self.notifier.clear().expect("cannot clear notifier");
                 }
                 _ => {
@@ -276,7 +280,7 @@ impl Driver {
             }
         }
         self.handlers.set(Some(handlers));
-        true
+        (true, notify)
     }
 
     /// Get notification handle for this driver
@@ -317,7 +321,7 @@ impl Notifier {
                     debug_assert_eq!(len, mem::size_of::<u64>() as _);
                     break Ok(());
                 }
-                // Clear the next time:)
+                // Clear the next time
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(()),
                 // Just like read_exact
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
