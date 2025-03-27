@@ -1,6 +1,10 @@
 # Changes
 
-## [0.1.10] - 2025-03-26
+## [0.1.13] - 2025-03-27
+
+* io-uring driver cleanups
+
+## [0.1.12] - 2025-03-26
 
 * Various cleanups
 

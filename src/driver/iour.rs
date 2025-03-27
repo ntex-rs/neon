@@ -1,17 +1,17 @@
-use std::cell::{Cell, RefCell};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::{collections::VecDeque, io, mem, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::Cell, cell::RefCell, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
 
 use io_uring::cqueue::{more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
-use io_uring::squeue::Entry as SEntry;
-use io_uring::types::{Fd, SubmitArgs, Timespec};
-use io_uring::{IoUring, Probe};
+use io_uring::{squeue::Entry as SEntry, types::Fd, IoUring, Probe};
+
+use crate::pool::Dispatchable;
 
 pub trait Handler {
     /// Operation is completed
     fn completed(&mut self, id: usize, flags: u32, result: io::Result<i32>);
 
+    /// Operation is canceled
     fn canceled(&mut self, id: usize);
 }
 
@@ -21,43 +21,39 @@ enum Change {
     Cancel { op_id: u64 },
 }
 
-pub(crate) fn spawn_blocking(
-    rt: &crate::Runtime,
-    _: &Driver,
-    f: Box<dyn crate::pool::Dispatchable + Send>,
-) {
+#[inline(always)]
+pub(crate) fn spawn_blocking(rt: &crate::Runtime, _: &Driver, f: Box<dyn Dispatchable + Send>) {
     let _ = rt.pool.dispatch(f);
 }
 
 pub struct DriverApi {
+    id: usize,
     batch: u64,
     probe: Rc<Probe>,
     changes: Rc<RefCell<VecDeque<Change>>>,
 }
 
 impl DriverApi {
+    #[inline]
     /// Submit request to the driver.
-    pub fn submit(&self, user_data: u32, entry: SEntry) {
+    pub fn submit(&self, id: u32, entry: SEntry) {
         log::debug!(
-            "Submit operation batch: {:?} user-data: {:?} entry: {:?}",
-            self.batch >> Driver::BATCH,
-            user_data,
-            entry,
+            "Submit batch({:?}) id({:?}) entry: {:?}",
+            self.id,
+            id,
+            entry
         );
         self.changes.borrow_mut().push_back(Change::Submit {
-            entry: entry.user_data(user_data as u64 | self.batch),
+            entry: entry.user_data(id as u64 | self.batch),
         });
     }
 
+    #[inline]
     /// Attempt to cancel an already issued request.
-    pub fn cancel(&self, user_data: u32) {
-        log::debug!(
-            "Cancel operation batch: {:?} user-data: {:?}",
-            self.batch >> Driver::BATCH,
-            user_data
-        );
+    pub fn cancel(&self, id: u32) {
+        log::debug!("Cancel op batch({:?}) id: {:?}", self.id, id);
         self.changes.borrow_mut().push_back(Change::Cancel {
-            op_id: user_data as u64 | self.batch,
+            op_id: id as u64 | self.batch,
         });
     }
 
@@ -99,16 +95,13 @@ impl Driver {
         ring.submitter().register_probe(&mut probe)?;
 
         let notifier = Notifier::new()?;
-
-        #[allow(clippy::useless_conversion)]
         unsafe {
             ring.submission()
                 .push(
                     &PollAdd::new(Fd(notifier.as_raw_fd()), libc::POLLIN as _)
                         .multi(true)
                         .build()
-                        .user_data(Self::NOTIFY)
-                        .into(),
+                        .user_data(Self::NOTIFY),
                 )
                 .expect("the squeue sould not be full");
         }
@@ -134,67 +127,40 @@ impl Driver {
     {
         let id = self.hid.get();
         let mut handlers = self.handlers.take().unwrap_or_default();
-
-        let api = DriverApi {
+        handlers.push(f(DriverApi {
+            id: id as usize,
             batch: id << Self::BATCH,
             probe: self.probe.clone(),
             changes: self.changes.clone(),
-        };
-        handlers.push(f(api));
-        self.hid.set(id + 1);
+        }));
         self.handlers.set(Some(handlers));
+        self.hid.set(id + 1);
     }
 
-    // Auto means that it choose to wait or not automatically.
-    fn submit_auto(&self, timeout: Option<Duration>) -> io::Result<()> {
-        let mut ring = self.ring.borrow_mut();
-        let res = {
-            // Last part of submission queue, wait till timeout.
-            if let Some(duration) = timeout {
-                let timespec = Timespec::new()
-                    .sec(duration.as_secs())
-                    .nsec(duration.subsec_nanos());
-                let args = SubmitArgs::new().timespec(&timespec);
-                ring.submitter().submit_with_args(1, &args)
-            } else {
-                ring.submit_and_wait(1)
-            }
+    fn submit(&self, ring: &mut IoUring<SEntry, CEntry>, wait_events: bool) -> io::Result<()> {
+        let result = if !wait_events {
+            ring.submit()
+        } else {
+            ring.submit_and_wait(1)
         };
-        match res {
-            Ok(_) => {
-                // log::debug!("Submit result: {res:?} {:?}", timeout);
-                if ring.completion().is_empty() {
-                    Err(io::ErrorKind::TimedOut.into())
-                } else {
-                    Ok(())
-                }
-            }
+        match result {
+            Ok(_) => Ok(()),
             Err(e) => match e.raw_os_error() {
-                Some(libc::ETIME) => {
-                    if timeout.is_some() && timeout != Some(Duration::ZERO) {
-                        Err(io::ErrorKind::TimedOut.into())
-                    } else {
-                        Ok(())
-                    }
-                }
-                Some(libc::EBUSY) | Some(libc::EAGAIN) => {
-                    Err(io::ErrorKind::Interrupted.into())
-                }
+                Some(libc::ETIME) => Ok(()),
+                Some(libc::EBUSY) | Some(libc::EAGAIN) => Ok(()),
                 _ => Err(e),
             },
         }
     }
 
-    fn apply_changes(&self) -> bool {
+    fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
         let mut changes = self.changes.borrow_mut();
         if changes.is_empty() {
             return false;
         }
         log::debug!("Apply changes, {:?}", changes.len());
 
-        let mut ring = self.ring.borrow_mut();
         let mut squeue = ring.submission();
-
         while let Some(change) = changes.pop_front() {
             match change {
                 Change::Submit { entry } => {
@@ -219,28 +185,19 @@ impl Driver {
 
     /// Poll the driver and handle completed operations.
     pub fn poll(&self, wait_events: bool) -> io::Result<()> {
-        let has_more = self.apply_changes();
-        let poll_result = self.poll_completions();
+        let mut ring = self.ring.borrow_mut();
+        let has_more = self.apply_changes(&mut ring);
+        let poll_result = self.poll_completions(&mut ring);
 
-        if !poll_result || has_more {
-            if has_more {
-                self.submit_auto(Some(Duration::ZERO))?;
-            } else {
-                let timeout = if wait_events {
-                    None
-                } else {
-                    Some(Duration::ZERO)
-                };
-                self.submit_auto(timeout)?;
-            }
-            self.poll_completions();
+        if has_more {
+            self.submit(&mut ring, false)?;
+        } else if !poll_result {
+            self.submit(&mut ring, wait_events)?;
         }
-
         Ok(())
     }
 
-    fn poll_completions(&self) -> bool {
-        let mut ring = self.ring.borrow_mut();
+    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
         let mut cqueue = ring.completion();
         cqueue.sync();
         if cqueue.is_empty() {
@@ -261,7 +218,6 @@ impl Driver {
                     let user_data = (user_data & Self::DATA_MASK) as usize;
 
                     let result = entry.result();
-
                     if result == -libc::ECANCELED {
                         handlers[batch].canceled(user_data);
                     } else {
