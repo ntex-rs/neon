@@ -1,6 +1,6 @@
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{cell::Cell, cell::RefCell, io, rc::Rc, sync::Arc};
-use std::{num::NonZeroUsize, time::Duration};
+use std::{mem, num::NonZeroUsize, time::Duration};
 
 pub use polling::Event;
 use polling::{Events, Poller};
@@ -176,7 +176,7 @@ impl Driver {
     }
 
     fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {
-        let mut changes = self.changes.borrow_mut();
+        let mut changes = mem::take(&mut *self.changes.borrow_mut());
         if log::log_enabled!(log::Level::Debug) && !changes.is_empty() {
             log::debug!("Apply driver changes, {:?}", changes.len());
         }
@@ -191,6 +191,11 @@ impl Driver {
                     let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
                 }
             }
+        }
+
+        let mut new_changes = self.changes.borrow_mut();
+        if new_changes.is_empty() {
+            *new_changes = changes;
         }
     }
 
