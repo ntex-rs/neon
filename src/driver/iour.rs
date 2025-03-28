@@ -137,22 +137,6 @@ impl Driver {
         self.hid.set(id + 1);
     }
 
-    fn submit(&self, ring: &mut IoUring<SEntry, CEntry>, wait_events: bool) -> io::Result<()> {
-        let result = if !wait_events {
-            ring.submit()
-        } else {
-            ring.submit_and_wait(1)
-        };
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => match e.raw_os_error() {
-                Some(libc::ETIME) => Ok(()),
-                Some(libc::EBUSY) | Some(libc::EAGAIN) => Ok(()),
-                _ => Err(e),
-            },
-        }
-    }
-
     fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
         let mut changes = self.changes.borrow_mut();
         if changes.is_empty() {
@@ -189,12 +173,23 @@ impl Driver {
         let has_more = self.apply_changes(&mut ring);
         let poll_result = self.poll_completions(&mut ring);
 
-        if has_more {
-            self.submit(&mut ring, false)?;
-        } else if !poll_result {
-            self.submit(&mut ring, wait_events)?;
+        let result = if has_more {
+            ring.submit()
+        } else if poll_result {
+            return Ok(());
+        } else if wait_events {
+            ring.submit_and_wait(1)
+        } else {
+            ring.submit()
+        };
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => match e.raw_os_error() {
+                Some(libc::ETIME) => Ok(()),
+                Some(libc::EBUSY) | Some(libc::EAGAIN) => Ok(()),
+                _ => Err(e),
+            },
         }
-        Ok(())
     }
 
     fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {

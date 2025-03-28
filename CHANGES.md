@@ -1,5 +1,11 @@
 # Changes
 
+## [0.1.14] - 2025-03-28
+
+* io-uring driver cleanups
+
+* Update polling dependency
+
 ## [0.1.13] - 2025-03-27
 
 * io-uring driver cleanups

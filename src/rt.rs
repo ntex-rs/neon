@@ -132,8 +132,10 @@ impl Runtime {
             self,
             &self.driver,
             Box::new(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-                let _ = tx.send(result);
+                if !tx.is_closed() {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                    let _ = tx.send(result);
+                }
             }),
         );
 
