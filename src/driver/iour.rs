@@ -268,7 +268,7 @@ impl Notifier {
                     debug_assert_eq!(len, mem::size_of::<u64>() as _);
                     break Ok(());
                 }
-                // Clear the next time:)
+                // Clear the next time
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(()),
                 // Just like read_exact
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,

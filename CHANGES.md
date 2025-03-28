@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.15] - 2025-03-28
+
+* Fix borrow panic in poll driver
+
 ## [0.1.14] - 2025-03-28
 
 * io-uring driver cleanups
