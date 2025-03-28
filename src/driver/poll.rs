@@ -96,6 +96,7 @@ pub struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
     changes: Rc<RefCell<Vec<Change>>>,
+    changes2: RefCell<Vec<Change>>,
     hid: Cell<u64>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
@@ -119,6 +120,7 @@ impl Driver {
             poll: Arc::new(Poller::new()?),
             events: RefCell::new(events),
             changes: Rc::new(RefCell::new(Vec::with_capacity(16))),
+            changes2: RefCell::new(Vec::with_capacity(16)),
             handlers: Cell::new(Some(Box::new(Vec::default()))),
         })
     }
@@ -176,11 +178,19 @@ impl Driver {
     }
 
     fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {
-        let mut changes = mem::take(&mut *self.changes.borrow_mut());
-        if log::log_enabled!(log::Level::Debug) && !changes.is_empty() {
-            log::debug!("Apply driver changes, {:?}", changes.len());
+        let mut changes = self.changes.borrow_mut();
+        if changes.is_empty() {
+            return;
         }
-        for op in changes.drain(..) {
+
+        let mut changes2 = self.changes2.borrow_mut();
+        mem::swap(&mut *changes, &mut changes2);
+        drop(changes);
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!("Apply driver changes, {:?}", changes2.len());
+        }
+        for op in changes2.drain(..) {
             match op {
                 Change::Error {
                     batch,
@@ -191,11 +201,6 @@ impl Driver {
                     let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
                 }
             }
-        }
-
-        let mut new_changes = self.changes.borrow_mut();
-        if new_changes.is_empty() {
-            *new_changes = changes;
         }
     }
 
