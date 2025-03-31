@@ -64,7 +64,7 @@ impl DriverApi {
 }
 
 /// Low-level driver of io-uring.
-pub struct Driver {
+pub(crate) struct Driver {
     ring: RefCell<IoUring<SEntry, CEntry>>,
     notifier: Notifier,
 
@@ -82,7 +82,7 @@ impl Driver {
     const DATA_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
     /// Create io-uring driver
-    pub fn new(capacity: u32) -> io::Result<Self> {
+    pub(crate) fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New io-uring driver");
 
         #[allow(unused_mut)]
@@ -116,12 +116,12 @@ impl Driver {
     }
 
     /// Driver type
-    pub const fn tp(&self) -> crate::driver::DriverType {
+    pub(crate) const fn tp(&self) -> crate::driver::DriverType {
         crate::driver::DriverType::IoUring
     }
 
     /// Register updates handler
-    pub fn register<F>(&self, f: F)
+    pub(crate) fn register<F>(&self, f: F)
     where
         F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
@@ -168,7 +168,7 @@ impl Driver {
     }
 
     /// Poll the driver and handle completed operations.
-    pub fn poll(&self, wait_events: bool) -> io::Result<()> {
+    pub(crate) fn poll(&self, wait_events: bool) -> io::Result<()> {
         let mut ring = self.ring.borrow_mut();
         let has_more = self.apply_changes(&mut ring);
         let poll_result = self.poll_completions(&mut ring);
@@ -231,7 +231,7 @@ impl Driver {
     }
 
     /// Get notification handle for this driver
-    pub fn handle(&self) -> NotifyHandle {
+    pub(crate) fn handle(&self) -> NotifyHandle {
         self.notifier.handle()
     }
 }
@@ -290,7 +290,7 @@ impl AsRawFd for Notifier {
 
 #[derive(Clone)]
 /// A notify handle to the driver.
-pub struct NotifyHandle {
+pub(crate) struct NotifyHandle {
     fd: Arc<OwnedFd>,
 }
 
@@ -300,7 +300,7 @@ impl NotifyHandle {
     }
 
     /// Notify the driver.
-    pub fn notify(&self) -> io::Result<()> {
+    pub(crate) fn notify(&self) -> io::Result<()> {
         let data = 1u64;
         crate::syscall!(libc::write(
             self.fd.as_raw_fd(),

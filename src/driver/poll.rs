@@ -97,7 +97,7 @@ impl DriverApi {
 }
 
 /// Low-level driver of polling.
-pub struct Driver {
+pub(crate) struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
     changes: Rc<UnsafeCell<VecDeque<Change>>>,
@@ -110,7 +110,7 @@ impl Driver {
     const BATCH_MASK: u64 = 0xFFFF_0000_0000_0000;
     const DATA_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-    pub fn new(capacity: u32) -> io::Result<Self> {
+    pub(crate) fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New poll driver");
 
         let events = if capacity == 0 {
@@ -129,12 +129,12 @@ impl Driver {
     }
 
     /// Driver type
-    pub const fn tp(&self) -> crate::driver::DriverType {
+    pub(crate) const fn tp(&self) -> crate::driver::DriverType {
         crate::driver::DriverType::Poll
     }
 
     /// Register updates handler
-    pub fn register<F>(&self, f: F)
+    pub(crate) fn register<F>(&self, f: F)
     where
         F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
@@ -153,7 +153,7 @@ impl Driver {
     }
 
     /// Poll the driver and handle completed entries.
-    pub fn poll(&self, wait_events: bool) -> io::Result<()> {
+    pub(crate) fn poll(&self, wait_events: bool) -> io::Result<()> {
         let has_changes = !unsafe { (*self.changes.get()).is_empty() };
         if has_changes {
             let mut handlers = self.handlers.take().unwrap();
@@ -196,7 +196,7 @@ impl Driver {
     }
 
     /// Get notification handle
-    pub fn handle(&self) -> NotifyHandle {
+    pub(crate) fn handle(&self) -> NotifyHandle {
         NotifyHandle::new(self.poll.clone())
     }
 }
@@ -209,7 +209,7 @@ impl AsRawFd for Driver {
 
 #[derive(Clone, Debug)]
 /// A notify handle to the inner driver.
-pub struct NotifyHandle {
+pub(crate) struct NotifyHandle {
     poll: Arc<Poller>,
 }
 
@@ -219,7 +219,7 @@ impl NotifyHandle {
     }
 
     /// Notify the driver
-    pub fn notify(&self) -> io::Result<()> {
+    pub(crate) fn notify(&self) -> io::Result<()> {
         self.poll.notify()
     }
 }

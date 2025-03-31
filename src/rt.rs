@@ -7,7 +7,8 @@ use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
 use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
 
-use crate::{driver::Driver, driver::NotifyHandle, pool::ThreadPool};
+use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle};
+use crate::pool::ThreadPool;
 
 scoped_tls::scoped_thread_local!(static CURRENT_RUNTIME: Runtime);
 
@@ -66,16 +67,27 @@ impl Runtime {
         }
     }
 
-    /// Get current driver
-    pub fn driver(&self) -> &Driver {
-        &self.driver
-    }
-
+    #[inline]
     /// Get handle for current runtime
     pub fn handle(&self) -> Handle {
         Handle {
             queue: self.queue.clone(),
         }
+    }
+
+    #[inline]
+    /// Get current driver type
+    pub fn driver_type(&self) -> DriverType {
+        self.driver.tp()
+    }
+
+    #[inline]
+    /// Register io handler
+    pub fn register_handler<F>(&self, f: F)
+    where
+        F: FnOnce(DriverApi) -> Box<dyn Handler>,
+    {
+        self.driver.register(f)
     }
 
     /// Block on the future till it completes.
