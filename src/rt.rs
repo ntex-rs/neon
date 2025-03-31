@@ -1,10 +1,11 @@
 use std::any::{Any, TypeId};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{HashMap, VecDeque};
 use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
+use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
 
 use crate::{driver::Driver, driver::NotifyHandle, pool::ThreadPool};
 
@@ -19,7 +20,7 @@ pub type JoinHandle<T> = oneshot::Receiver<Result<T, Box<dyn Any + Send>>>;
 /// It is a thread local runtime, and cannot be sent to other threads.
 pub struct Runtime {
     driver: Driver,
-    runnables: Arc<RunnableQueue>,
+    queue: Arc<RunnableQueue>,
     pub(crate) pool: ThreadPool,
     values: RefCell<HashMap<TypeId, Box<dyn Any>, fxhash::FxBuildHasher>>,
 }
@@ -37,9 +38,11 @@ impl Runtime {
 
     #[allow(clippy::arc_with_non_send_sync)]
     fn with_builder(builder: &RuntimeBuilder) -> io::Result<Self> {
+        let driver = builder.build_driver()?;
+        let queue = Arc::new(RunnableQueue::new(builder.event_interval, driver.handle()));
         Ok(Self {
-            driver: builder.build_driver()?,
-            runnables: Arc::new(RunnableQueue::new(builder.event_interval)),
+            queue,
+            driver,
             pool: ThreadPool::new(builder.pool_limit, builder.pool_recv_timeout),
             values: RefCell::new(HashMap::default()),
         })
@@ -71,8 +74,7 @@ impl Runtime {
     /// Get handle for current runtime
     pub fn handle(&self) -> Handle {
         Handle {
-            handle: self.driver.handle(),
-            runnables: self.runnables.clone(),
+            queue: self.queue.clone(),
         }
     }
 
@@ -82,8 +84,9 @@ impl Runtime {
             let mut result = None;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
+            let mut delayed = false;
             loop {
-                let more_tasks = self.runnables.run();
+                let more_tasks = self.queue.run(delayed);
                 if let Some(result) = result.take() {
                     return result;
                 }
@@ -91,6 +94,7 @@ impl Runtime {
                 if let Err(e) = self.driver.poll(!more_tasks) {
                     panic!("Failed to poll driver {e:?}")
                 }
+                delayed = !delayed;
             }
         })
     }
@@ -109,10 +113,9 @@ impl Runtime {
     ///
     /// The caller should ensure the captured lifetime is long enough.
     pub unsafe fn spawn_unchecked<F: Future>(&self, future: F) -> Task<F::Output> {
-        let runnables = self.runnables.clone();
-        let handle = self.driver.handle();
+        let queue = self.queue.clone();
         let schedule = move |runnable| {
-            runnables.schedule(runnable, &handle);
+            queue.schedule(runnable);
         };
         let (runnable, task) = async_task::spawn_unchecked(future, schedule);
         runnable.schedule();
@@ -175,28 +178,19 @@ impl fd::AsRawFd for Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        CURRENT_RUNTIME.set(self, || {
-            while self.runnables.sync_runnables.pop().is_some() {}
-            loop {
-                let runnable = self.runnables.local_runnables.borrow_mut().pop_front();
-                if runnable.is_none() {
-                    break;
-                }
-            }
-        })
+        CURRENT_RUNTIME.set(self, || self.queue.clear())
     }
 }
 
 /// Handle for current runtime
 pub struct Handle {
-    handle: NotifyHandle,
-    runnables: Arc<RunnableQueue>,
+    queue: Arc<RunnableQueue>,
 }
 
 impl Handle {
     /// Wake up runtime
-    pub fn notify(&self) {
-        self.handle.notify().ok();
+    pub fn notify(&self) -> io::Result<()> {
+        self.queue.driver.notify()
     }
 
     /// Spawns a new asynchronous task, returning a [`Task`] for it.
@@ -204,10 +198,9 @@ impl Handle {
     /// Spawning a task enables the task to execute concurrently to other tasks.
     /// There is no guarantee that a spawned task will execute to completion.
     pub fn spawn<F: Future + Send + 'static>(&self, future: F) -> Task<F::Output> {
-        let runnables = self.runnables.clone();
-        let handle = self.handle.clone();
+        let queue = self.queue.clone();
         let schedule = move |runnable| {
-            runnables.schedule(runnable, &handle);
+            queue.schedule(runnable);
         };
         let (runnable, task) = unsafe { async_task::spawn_unchecked(future, schedule) };
         runnable.schedule();
@@ -218,40 +211,48 @@ impl Handle {
 struct RunnableQueue {
     id: thread::ThreadId,
     idle: Cell<bool>,
+    driver: NotifyHandle,
     event_interval: usize,
-    local_runnables: RefCell<VecDeque<Runnable>>,
-    sync_runnables: SegQueue<Runnable>,
+    local_queue: UnsafeCell<VecDeque<Runnable>>,
+    sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
+    sync_queue: SegQueue<Runnable>,
 }
 
 impl RunnableQueue {
-    fn new(event_interval: usize) -> Self {
+    fn new(event_interval: usize, driver: NotifyHandle) -> Self {
         Self {
+            driver,
             event_interval,
             id: thread::current().id(),
             idle: Cell::new(true),
-            local_runnables: RefCell::new(VecDeque::new()),
-            sync_runnables: SegQueue::new(),
+            local_queue: UnsafeCell::new(VecDeque::new()),
+            sync_fixed_queue: Queue::default(),
+            sync_queue: SegQueue::new(),
         }
     }
 
-    fn schedule(&self, runnable: Runnable, handle: &NotifyHandle) {
+    fn schedule(&self, runnable: Runnable) {
         if self.id == thread::current().id() {
-            self.local_runnables.borrow_mut().push_back(runnable);
+            unsafe { (*self.local_queue.get()).push_back(runnable) };
             if self.idle.get() {
-                handle.notify().ok();
                 self.idle.set(false);
+                self.driver.notify().ok();
             }
         } else {
-            handle.notify().ok();
-            self.sync_runnables.push(runnable);
+            if let Err(TryEnqueueError::InsufficientCapacity([runnable])) =
+                self.sync_fixed_queue.try_enqueue([runnable])
+            {
+                self.sync_queue.push(runnable);
+            }
+            self.driver.notify().ok();
         }
     }
 
-    fn run(&self) -> bool {
+    fn run(&self, delayed: bool) -> bool {
         self.idle.set(false);
 
         for _ in 0..self.event_interval {
-            let task = self.local_runnables.borrow_mut().pop_front();
+            let task = unsafe { (*self.local_queue.get()).pop_front() };
             if let Some(task) = task {
                 task.run();
             } else {
@@ -259,18 +260,31 @@ impl RunnableQueue {
             }
         }
 
-        for _ in 0..self.event_interval {
-            if !self.sync_runnables.is_empty() {
-                if let Some(task) = self.sync_runnables.pop() {
-                    task.run();
-                    continue;
-                }
+        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+            for task in buf {
+                task.run();
             }
-            break;
+        }
+
+        if delayed {
+            for _ in 0..self.event_interval {
+                if !self.sync_queue.is_empty() {
+                    if let Some(task) = self.sync_queue.pop() {
+                        task.run();
+                        continue;
+                    }
+                }
+                break;
+            }
         }
         self.idle.set(true);
 
-        !self.local_runnables.borrow().is_empty() || !self.sync_runnables.is_empty()
+        !unsafe { (*self.local_queue.get()).is_empty() } || !self.sync_queue.is_empty()
+    }
+
+    fn clear(&self) {
+        while self.sync_queue.pop().is_some() {}
+        unsafe { (*self.local_queue.get()).clear() };
     }
 }
 

@@ -1,6 +1,7 @@
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
-use std::{cell::Cell, cell::RefCell, io, rc::Rc, sync::Arc};
-use std::{mem, num::NonZeroUsize, time::Duration};
+use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
+use std::{io, rc::Rc, sync::Arc};
 
 pub use polling::Event;
 use polling::{Events, Poller};
@@ -18,7 +19,7 @@ pub(crate) fn spawn_blocking(
     drv: &Driver,
     f: Box<dyn crate::pool::Dispatchable + Send>,
 ) {
-    drv.changes.borrow_mut().push(Change::Blocking(f));
+    unsafe { (*drv.changes.get()).push_back(Change::Blocking(f)) }
 }
 
 enum Change {
@@ -34,7 +35,7 @@ pub struct DriverApi {
     id: usize,
     batch: u64,
     poll: Arc<Poller>,
-    changes: Rc<RefCell<Vec<Change>>>,
+    changes: Rc<UnsafeCell<VecDeque<Change>>>,
 }
 
 impl DriverApi {
@@ -53,7 +54,7 @@ impl DriverApi {
         );
 
         if let Err(err) = unsafe { self.poll.add(fd, event) } {
-            self.changes.borrow_mut().push(Change::Error {
+            self.change(Change::Error {
                 batch: self.id,
                 user_data: id,
                 error: err,
@@ -64,7 +65,7 @@ impl DriverApi {
     /// Detach an fd from the driver.
     pub fn detach(&self, fd: RawFd, id: u32) {
         if let Err(err) = self.poll.delete(unsafe { BorrowedFd::borrow_raw(fd) }) {
-            self.changes.borrow_mut().push(Change::Error {
+            self.change(Change::Error {
                 batch: self.id,
                 user_data: id,
                 error: err,
@@ -82,12 +83,16 @@ impl DriverApi {
             .poll
             .modify(unsafe { BorrowedFd::borrow_raw(fd) }, event);
         if let Err(err) = result {
-            self.changes.borrow_mut().push(Change::Error {
+            self.change(Change::Error {
                 batch: self.id,
                 user_data: id,
                 error: err,
             })
         }
+    }
+
+    fn change(&self, ev: Change) {
+        unsafe { (*self.changes.get()).push_back(ev) };
     }
 }
 
@@ -95,8 +100,7 @@ impl DriverApi {
 pub struct Driver {
     poll: Arc<Poller>,
     events: RefCell<Events>,
-    changes: Rc<RefCell<Vec<Change>>>,
-    changes2: RefCell<Vec<Change>>,
+    changes: Rc<UnsafeCell<VecDeque<Change>>>,
     hid: Cell<u64>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
@@ -119,8 +123,7 @@ impl Driver {
             hid: Cell::new(0),
             poll: Arc::new(Poller::new()?),
             events: RefCell::new(events),
-            changes: Rc::new(RefCell::new(Vec::with_capacity(16))),
-            changes2: RefCell::new(Vec::with_capacity(16)),
+            changes: Rc::new(UnsafeCell::new(VecDeque::with_capacity(32))),
             handlers: Cell::new(Some(Box::new(Vec::default()))),
         })
     }
@@ -151,7 +154,7 @@ impl Driver {
 
     /// Poll the driver and handle completed entries.
     pub fn poll(&self, wait_events: bool) -> io::Result<()> {
-        let has_changes = !self.changes.borrow().is_empty();
+        let has_changes = !unsafe { (*self.changes.get()).is_empty() };
         if has_changes {
             let mut handlers = self.handlers.take().unwrap();
             self.apply_changes(&mut handlers);
@@ -178,19 +181,7 @@ impl Driver {
     }
 
     fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {
-        let mut changes = self.changes.borrow_mut();
-        if changes.is_empty() {
-            return;
-        }
-
-        let mut changes2 = self.changes2.borrow_mut();
-        mem::swap(&mut *changes, &mut changes2);
-        drop(changes);
-
-        if log::log_enabled!(log::Level::Debug) {
-            log::debug!("Apply driver changes, {:?}", changes2.len());
-        }
-        for op in changes2.drain(..) {
+        while let Some(op) = unsafe { (*self.changes.get()).pop_front() } {
             match op {
                 Change::Error {
                     batch,
