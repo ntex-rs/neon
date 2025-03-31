@@ -3,7 +3,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
 use std::{io, rc::Rc, sync::Arc};
 
-pub use polling::Event;
+pub use polling::{Event, PollMode};
 use polling::{Events, Poller};
 
 pub trait Handler {
@@ -43,17 +43,9 @@ impl DriverApi {
     ///
     /// `fd` must be attached to the driver before using register/unregister
     /// methods.
-    pub fn attach(&self, fd: RawFd, id: u32, event: Option<Event>) {
-        let key = (id as u64 | self.batch) as usize;
-        let event = event.map_or_else(
-            || Event::none(key),
-            |mut ev| {
-                ev.key = key;
-                ev
-            },
-        );
-
-        if let Err(err) = unsafe { self.poll.add(fd, event) } {
+    pub fn attach(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
+        event.key = (id as u64 | self.batch) as usize;
+        if let Err(err) = unsafe { self.poll.add_with_mode(fd, event, mode) } {
             self.change(Change::Error {
                 batch: self.id,
                 user_data: id,
@@ -74,14 +66,14 @@ impl DriverApi {
     }
 
     /// Register interest for specified file descriptor.
-    pub fn modify(&self, fd: RawFd, id: u32, mut event: Event) {
+    pub fn modify(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
         log::debug!("Register event {:?} for {:?} id: {:?}", event, fd, id);
 
         event.key = (id as u64 | self.batch) as usize;
 
-        let result = self
-            .poll
-            .modify(unsafe { BorrowedFd::borrow_raw(fd) }, event);
+        let result =
+            self.poll
+                .modify_with_mode(unsafe { BorrowedFd::borrow_raw(fd) }, event, mode);
         if let Err(err) = result {
             self.change(Change::Error {
                 batch: self.id,
