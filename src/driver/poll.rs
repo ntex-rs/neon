@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, UnsafeCell};
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
 use std::{io, rc::Rc, sync::Arc};
@@ -67,8 +67,6 @@ impl DriverApi {
 
     /// Register interest for specified file descriptor.
     pub fn modify(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
-        log::debug!("Register event {:?} for {:?} id: {:?}", event, fd, id);
-
         event.key = (id as u64 | self.batch) as usize;
 
         let result =
@@ -91,7 +89,7 @@ impl DriverApi {
 /// Low-level driver of polling.
 pub(crate) struct Driver {
     poll: Arc<Poller>,
-    events: RefCell<Events>,
+    capacity: usize,
     changes: Rc<UnsafeCell<VecDeque<Change>>>,
     hid: Cell<u64>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
@@ -105,16 +103,10 @@ impl Driver {
     pub(crate) fn new(capacity: u32) -> io::Result<Self> {
         log::trace!("New poll driver");
 
-        let events = if capacity == 0 {
-            Events::new()
-        } else {
-            Events::with_capacity(NonZeroUsize::new(capacity as usize).unwrap())
-        };
-
         Ok(Self {
             hid: Cell::new(0),
             poll: Arc::new(Poller::new()?),
-            events: RefCell::new(events),
+            capacity: capacity as usize,
             changes: Rc::new(UnsafeCell::new(VecDeque::with_capacity(32))),
             handlers: Cell::new(Some(Box::new(Vec::default()))),
         })
@@ -145,31 +137,41 @@ impl Driver {
     }
 
     /// Poll the driver and handle completed entries.
-    pub(crate) fn poll(&self, wait_events: bool) -> io::Result<()> {
-        let has_changes = !unsafe { (*self.changes.get()).is_empty() };
-        if has_changes {
+    pub(crate) fn poll<T, F>(&self, mut f: F) -> io::Result<T>
+    where
+        F: FnMut() -> super::PollResult<T>,
+    {
+        let mut events = if self.capacity == 0 {
+            Events::new()
+        } else {
+            Events::with_capacity(NonZeroUsize::new(self.capacity).unwrap())
+        };
+
+        loop {
+            let timeout = match f() {
+                super::PollResult::Pending => None,
+                super::PollResult::HasTasks => Some(Duration::ZERO),
+                super::PollResult::Ready(val) => return Ok(val),
+            };
+
+            let has_changes = !unsafe { (*self.changes.get()).is_empty() };
+            if has_changes {
+                let mut handlers = self.handlers.take().unwrap();
+                self.apply_changes(&mut handlers);
+                self.handlers.set(Some(handlers));
+            }
+
+            self.poll.wait(&mut events, timeout)?;
+
             let mut handlers = self.handlers.take().unwrap();
+            for event in events.iter() {
+                let key = event.key as u64;
+                let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                handlers[batch].event((key & Self::DATA_MASK) as usize, event)
+            }
             self.apply_changes(&mut handlers);
             self.handlers.set(Some(handlers));
         }
-
-        let mut events = self.events.borrow_mut();
-        let timeout = if wait_events {
-            None
-        } else {
-            Some(Duration::ZERO)
-        };
-        self.poll.wait(&mut events, timeout)?;
-
-        let mut handlers = self.handlers.take().unwrap();
-        for event in events.iter() {
-            let key = event.key as u64;
-            let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
-            handlers[batch].event((key & Self::DATA_MASK) as usize, event)
-        }
-        self.apply_changes(&mut handlers);
-        self.handlers.set(Some(handlers));
-        Ok(())
     }
 
     fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {

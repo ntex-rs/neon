@@ -7,7 +7,7 @@ use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
 use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
 
-use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle};
+use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
 
 scoped_tls::scoped_thread_local!(static CURRENT_RUNTIME: Runtime);
@@ -94,20 +94,22 @@ impl Runtime {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         CURRENT_RUNTIME.set(self, || {
             let mut result = None;
+            let mut delayed = false;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
-            let mut delayed = false;
-            loop {
-                let more_tasks = self.queue.run(delayed);
-                if let Some(result) = result.take() {
-                    return result;
-                }
-
-                if let Err(e) = self.driver.poll(!more_tasks) {
-                    panic!("Failed to poll driver {e:?}")
-                }
-                delayed = !delayed;
-            }
+            self.driver
+                .poll(|| {
+                    let more_tasks = self.queue.run(delayed);
+                    delayed |= delayed;
+                    if let Some(result) = result.take() {
+                        PollResult::Ready(result)
+                    } else if more_tasks {
+                        PollResult::HasTasks
+                    } else {
+                        PollResult::Pending
+                    }
+                })
+                .expect("Failed to poll driver")
         })
     }
 

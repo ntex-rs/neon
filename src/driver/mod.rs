@@ -40,6 +40,12 @@ impl DriverType {
     }
 }
 
+pub(crate) enum PollResult<T> {
+    Ready(T),
+    Pending,
+    HasTasks,
+}
+
 #[cfg(windows)]
 #[macro_export]
 #[doc(hidden)]

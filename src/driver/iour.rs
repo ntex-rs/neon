@@ -65,6 +65,7 @@ impl DriverApi {
 
 /// Low-level driver of io-uring.
 pub(crate) struct Driver {
+    fd: RawFd,
     ring: RefCell<IoUring<SEntry, CEntry>>,
     notifier: Notifier,
 
@@ -107,6 +108,7 @@ impl Driver {
         }
         Ok(Self {
             notifier,
+            fd: ring.as_raw_fd(),
             ring: RefCell::new(ring),
             probe: Rc::new(probe),
             hid: Cell::new(0),
@@ -168,27 +170,37 @@ impl Driver {
     }
 
     /// Poll the driver and handle completed operations.
-    pub(crate) fn poll(&self, wait_events: bool) -> io::Result<()> {
+    pub(crate) fn poll<T, F>(&self, mut f: F) -> io::Result<T>
+    where
+        F: FnMut() -> super::PollResult<T>,
+    {
         let mut ring = self.ring.borrow_mut();
-        let has_more = self.apply_changes(&mut ring);
-        let poll_result = self.poll_completions(&mut ring);
 
-        let result = if has_more {
-            ring.submit()
-        } else if poll_result {
-            return Ok(());
-        } else if wait_events {
-            ring.submit_and_wait(1)
-        } else {
-            ring.submit()
-        };
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => match e.raw_os_error() {
-                Some(libc::ETIME) => Ok(()),
-                Some(libc::EBUSY) | Some(libc::EAGAIN) => Ok(()),
-                _ => Err(e),
-            },
+        loop {
+            let wait_events = match f() {
+                super::PollResult::Pending => true,
+                super::PollResult::HasTasks => false,
+                super::PollResult::Ready(val) => return Ok(val),
+            };
+
+            let has_more = self.apply_changes(&mut ring);
+            let poll_result = self.poll_completions(&mut ring);
+
+            let result = if has_more {
+                ring.submit()
+            } else if poll_result {
+                continue;
+            } else if wait_events {
+                ring.submit_and_wait(1)
+            } else {
+                ring.submit()
+            };
+            if let Err(e) = result {
+                match e.raw_os_error() {
+                    Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN) => {}
+                    _ => return Err(e),
+                }
+            }
         }
     }
 
@@ -238,7 +250,7 @@ impl Driver {
 
 impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
-        self.ring.borrow().as_raw_fd()
+        self.fd
     }
 }
 
