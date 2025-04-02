@@ -293,12 +293,13 @@ impl RunnableQueue {
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }
-            || !self.sync_fixed_queue.is_empty()
+            //|| !self.sync_fixed_queue.is_empty()
             || !self.sync_queue.is_empty()
     }
 
     fn clear(&self) {
         while self.sync_queue.pop().is_some() {}
+        while self.sync_fixed_queue.try_dequeue().is_ok() {}
         unsafe { (*self.local_queue.get()).clear() };
     }
 }
