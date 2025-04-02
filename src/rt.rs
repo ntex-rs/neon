@@ -261,7 +261,7 @@ impl RunnableQueue {
         }
     }
 
-    fn run(&self, _delayed: bool) -> bool {
+    fn run(&self, delayed: bool) -> bool {
         self.idle.set(false);
 
         for _ in 0..self.event_interval {
@@ -273,23 +273,23 @@ impl RunnableQueue {
             }
         }
 
-        //if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
-        //    for task in buf {
-        //        task.run();
-        //    }
-        //}
-
-        //if delayed {
-        for _ in 0..self.event_interval {
-            if !self.sync_queue.is_empty() {
-                if let Some(task) = self.sync_queue.pop() {
-                    task.run();
-                    continue;
-                }
+        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+            for task in buf {
+                task.run();
             }
-            break;
         }
-        //}
+
+        if delayed {
+            for _ in 0..self.event_interval {
+                if !self.sync_queue.is_empty() {
+                    if let Some(task) = self.sync_queue.pop() {
+                        task.run();
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }

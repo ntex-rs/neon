@@ -3,8 +3,8 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
 use std::{io, rc::Rc, sync::Arc};
 
-pub use ntex_polling::{Event, PollMode};
-use ntex_polling::{Events, Poller};
+pub use polling::{Event, PollMode};
+use polling::{Events, Poller};
 
 pub trait Handler {
     /// Submitted interest
