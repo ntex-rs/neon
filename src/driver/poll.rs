@@ -151,12 +151,6 @@ impl Driver {
         };
 
         loop {
-            let timeout = match f() {
-                super::PollResult::Pending => None,
-                super::PollResult::HasTasks => Some(Duration::ZERO),
-                super::PollResult::Ready(val) => return Ok(val),
-            };
-
             let has_changes = !unsafe { (*self.changes.get()).is_empty() };
             if has_changes {
                 let mut handlers = self.handlers.take().unwrap();
@@ -164,6 +158,11 @@ impl Driver {
                 self.handlers.set(Some(handlers));
             }
 
+            let timeout = match f() {
+                super::PollResult::Pending => None,
+                super::PollResult::HasTasks => Some(Duration::ZERO),
+                super::PollResult::Ready(val) => return Ok(val),
+            };
             self.poll.wait(&mut events, timeout)?;
 
             let mut handlers = self.handlers.take().unwrap();
