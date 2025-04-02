@@ -123,7 +123,10 @@ impl Driver {
         F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
         let id = self.hid.get();
-        let mut handlers = self.handlers.take().unwrap_or_default();
+        let mut handlers = self
+            .handlers
+            .take()
+            .expect("Cannot register handler during event handling");
 
         let api = DriverApi {
             id: id as usize,

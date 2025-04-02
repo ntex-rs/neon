@@ -99,11 +99,10 @@ impl Runtime {
 
             self.driver
                 .poll(|| {
-                    let more_tasks = self.queue.run(delayed);
                     delayed |= delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
-                    } else if more_tasks {
+                    } else if self.queue.run(delayed) {
                         PollResult::HasTasks
                     } else {
                         PollResult::Pending
@@ -262,7 +261,7 @@ impl RunnableQueue {
         }
     }
 
-    fn run(&self, delayed: bool) -> bool {
+    fn run(&self, _delayed: bool) -> bool {
         self.idle.set(false);
 
         for _ in 0..self.event_interval {
@@ -274,26 +273,28 @@ impl RunnableQueue {
             }
         }
 
-        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
-            for task in buf {
-                task.run();
-            }
-        }
+        //if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+        //    for task in buf {
+        //        task.run();
+        //    }
+        //}
 
-        if delayed {
-            for _ in 0..self.event_interval {
-                if !self.sync_queue.is_empty() {
-                    if let Some(task) = self.sync_queue.pop() {
-                        task.run();
-                        continue;
-                    }
+        //if delayed {
+        for _ in 0..self.event_interval {
+            if !self.sync_queue.is_empty() {
+                if let Some(task) = self.sync_queue.pop() {
+                    task.run();
+                    continue;
                 }
-                break;
             }
+            break;
         }
+        //}
         self.idle.set(true);
 
-        !unsafe { (*self.local_queue.get()).is_empty() } || !self.sync_queue.is_empty()
+        !unsafe { (*self.local_queue.get()).is_empty() }
+            || !self.sync_fixed_queue.is_empty()
+            || !self.sync_queue.is_empty()
     }
 
     fn clear(&self) {
