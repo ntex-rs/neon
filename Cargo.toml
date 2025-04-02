@@ -58,7 +58,7 @@ windows-sys = { version = "0.52.0", features = [
 # Unix specific dependencies
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.164"
-ntex-polling = "3.7.4"
+polling = "3.7.4"
 
 # Linux specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
