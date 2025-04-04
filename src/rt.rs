@@ -258,11 +258,11 @@ impl RunnableQueue {
                 self.driver.notify().ok();
             }
         } else {
-            //if let Err(TryEnqueueError::InsufficientCapacity([runnable])) =
-            //    self.sync_fixed_queue.try_enqueue([runnable])
-            //{
-            self.sync_queue.push(runnable);
-            //}
+            if let Err(TryEnqueueError::InsufficientCapacity([runnable])) =
+                self.sync_fixed_queue.try_enqueue([runnable])
+            {
+                self.sync_queue.push(runnable);
+            }
             self.driver.notify().ok();
         }
     }
@@ -279,27 +279,27 @@ impl RunnableQueue {
             }
         }
 
-        // if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
-        //     for task in buf {
-        //         task.run();
-        //     }
-        // }
-
-        // if delayed {
-        for _ in 0..self.event_interval {
-            if !self.sync_queue.is_empty() {
-                if let Some(task) = self.sync_queue.pop() {
-                    task.run();
-                    continue;
-                }
+        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+            for task in buf {
+                task.run();
             }
-            break;
         }
-        //}
+
+        if delayed {
+            for _ in 0..self.event_interval {
+                if !self.sync_queue.is_empty() {
+                    if let Some(task) = self.sync_queue.pop() {
+                        task.run();
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }
-            //|| !self.sync_fixed_queue.is_empty()
+            || !self.sync_fixed_queue.is_empty()
             || !self.sync_queue.is_empty()
     }
 
