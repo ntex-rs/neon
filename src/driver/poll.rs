@@ -43,7 +43,15 @@ impl DriverApi {
     ///
     /// `fd` must be attached to the driver before using register/unregister
     /// methods.
-    pub fn attach(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
+    pub fn attach(&self, fd: RawFd, id: u32, event: Event) {
+        self.attach_with_mode(fd, id, event, PollMode::Oneshot)
+    }
+
+    /// Attach an fd to the driver with specific mode.
+    ///
+    /// `fd` must be attached to the driver before using register/unregister
+    /// methods.
+    pub fn attach_with_mode(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
         event.key = (id as u64 | self.batch) as usize;
         if let Err(err) = unsafe { self.poll.add_with_mode(fd, event, mode) } {
             self.change(Change::Error {
@@ -66,7 +74,12 @@ impl DriverApi {
     }
 
     /// Register interest for specified file descriptor.
-    pub fn modify(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
+    pub fn modify(&self, fd: RawFd, id: u32, event: Event) {
+        self.modify_with_mode(fd, id, event, PollMode::Oneshot)
+    }
+
+    /// Register interest for specified file descriptor.
+    pub fn modify_with_mode(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
         event.key = (id as u64 | self.batch) as usize;
 
         let result =
