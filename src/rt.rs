@@ -267,7 +267,7 @@ impl RunnableQueue {
         }
     }
 
-    fn run(&self, _delayed: bool) -> bool {
+    fn run(&self, delayed: bool) -> bool {
         self.idle.set(false);
 
         for _ in 0..self.event_interval {
