@@ -118,7 +118,7 @@ impl Driver {
     }
 
     /// Driver type
-    pub(crate) const fn tp(&self) -> crate::driver::DriverType {
+    pub const fn tp(&self) -> crate::driver::DriverType {
         crate::driver::DriverType::IoUring
     }
 
