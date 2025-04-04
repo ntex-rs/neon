@@ -75,6 +75,12 @@ impl Runtime {
         }
     }
 
+    #[doc(hidden)]
+    /// Get driver
+    pub fn driver(&self) -> &Driver {
+        &self.driver
+    }
+
     #[inline]
     /// Get current driver type
     pub fn driver_type(&self) -> DriverType {

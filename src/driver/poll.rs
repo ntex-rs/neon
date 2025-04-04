@@ -87,7 +87,7 @@ impl DriverApi {
 }
 
 /// Low-level driver of polling.
-pub(crate) struct Driver {
+pub struct Driver {
     poll: Arc<Poller>,
     capacity: usize,
     changes: Rc<UnsafeCell<VecDeque<Change>>>,
@@ -118,7 +118,7 @@ impl Driver {
     }
 
     /// Register updates handler
-    pub(crate) fn register<F>(&self, f: F)
+    pub fn register<F>(&self, f: F)
     where
         F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
@@ -151,6 +151,7 @@ impl Driver {
         };
 
         loop {
+            let result = f();
             let has_changes = !unsafe { (*self.changes.get()).is_empty() };
             if has_changes {
                 let mut handlers = self.handlers.take().unwrap();
@@ -158,7 +159,7 @@ impl Driver {
                 self.handlers.set(Some(handlers));
             }
 
-            let timeout = match f() {
+            let timeout = match result {
                 super::PollResult::Pending => None,
                 super::PollResult::HasTasks => Some(Duration::ZERO),
                 super::PollResult::Ready(val) => return Ok(val),

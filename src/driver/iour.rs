@@ -64,7 +64,7 @@ impl DriverApi {
 }
 
 /// Low-level driver of io-uring.
-pub(crate) struct Driver {
+pub struct Driver {
     fd: RawFd,
     ring: RefCell<IoUring<SEntry, CEntry>>,
     notifier: Notifier,
@@ -123,7 +123,7 @@ impl Driver {
     }
 
     /// Register updates handler
-    pub(crate) fn register<F>(&self, f: F)
+    pub fn register<F>(&self, f: F)
     where
         F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
