@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.17] - 2025-04-05
+
+* Revert thread pool changes
+
 ## [0.1.16] - 2025-03-31
 
 * Optimize runtime queue
