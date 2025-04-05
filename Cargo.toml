@@ -58,16 +58,16 @@ windows-sys = { version = "0.52.0", features = [
 # Unix specific dependencies
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.164"
-ntex-polling = "3.7.4"
+polling = "3.7.4"
 
 # Linux specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { version = "0.7.4", optional = true }
-ntex-polling = { version = "3.7.4", optional = true }
+polling = { version = "3.7.4", optional = true }
 
 # Other platform dependencies
 [target.'cfg(all(not(target_os = "linux"), unix))'.dependencies]
-ntex-polling = { version = "3.7.4" }
+polling = { version = "3.7.4" }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.52.0", features = ["Win32_UI_WindowsAndMessaging"] }
@@ -76,4 +76,4 @@ windows-sys = { version = "0.52.0", features = ["Win32_UI_WindowsAndMessaging"] 
 default = []
 io-uring = ["dep:io-uring"]
 io-uring-compat = []
-ntex-polling = ["dep:ntex-polling"]
+polling = ["dep:polling"]

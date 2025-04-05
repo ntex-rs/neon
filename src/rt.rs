@@ -5,7 +5,8 @@ use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
-use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
+use swap_buffer_queue::error::{TryDequeueError, TryEnqueueError};
+use swap_buffer_queue::{buffer::ArrayBuffer, Queue};
 
 use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
@@ -75,6 +76,12 @@ impl Runtime {
         }
     }
 
+    #[doc(hidden)]
+    /// Get driver
+    pub fn driver(&self) -> &Driver {
+        &self.driver
+    }
+
     #[inline]
     /// Get current driver type
     pub fn driver_type(&self) -> DriverType {
@@ -99,11 +106,10 @@ impl Runtime {
 
             self.driver
                 .poll(|| {
-                    let more_tasks = self.queue.run(delayed);
                     delayed |= delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
-                    } else if more_tasks {
+                    } else if self.queue.run(delayed) {
                         PollResult::HasTasks
                     } else {
                         PollResult::Pending
@@ -253,9 +259,8 @@ impl RunnableQueue {
                 self.driver.notify().ok();
             }
         } else {
-            if let Err(TryEnqueueError::InsufficientCapacity([runnable])) =
-                self.sync_fixed_queue.try_enqueue([runnable])
-            {
+            let result = self.sync_fixed_queue.try_enqueue([runnable]);
+            if let Err(TryEnqueueError::InsufficientCapacity([runnable])) = result {
                 self.sync_queue.push(runnable);
             }
             self.driver.notify().ok();
@@ -274,13 +279,21 @@ impl RunnableQueue {
             }
         }
 
-        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
-            for task in buf {
-                task.run();
+        loop {
+            match self.sync_fixed_queue.try_dequeue() {
+                Ok(buf) => {
+                    for task in buf {
+                        task.run();
+                    }
+                }
+                Err(TryDequeueError::Pending) => continue,
+                _ => {}
             }
+            break;
         }
+        let sync_fixed_empty = self.sync_fixed_queue.is_empty();
 
-        if delayed {
+        if delayed && sync_fixed_empty {
             for _ in 0..self.event_interval {
                 if !self.sync_queue.is_empty() {
                     if let Some(task) = self.sync_queue.pop() {
@@ -293,11 +306,14 @@ impl RunnableQueue {
         }
         self.idle.set(true);
 
-        !unsafe { (*self.local_queue.get()).is_empty() } || !self.sync_queue.is_empty()
+        !unsafe { (*self.local_queue.get()).is_empty() }
+            || !sync_fixed_empty
+            || !self.sync_queue.is_empty()
     }
 
     fn clear(&self) {
         while self.sync_queue.pop().is_some() {}
+        while self.sync_fixed_queue.try_dequeue().is_ok() {}
         unsafe { (*self.local_queue.get()).clear() };
     }
 }

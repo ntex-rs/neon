@@ -3,8 +3,8 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
 use std::{io, rc::Rc, sync::Arc};
 
-pub use ntex_polling::{Event, PollMode};
-use ntex_polling::{Events, Poller};
+pub use polling::{Event, PollMode};
+use polling::{Events, Poller};
 
 pub trait Handler {
     /// Submitted interest
@@ -43,7 +43,15 @@ impl DriverApi {
     ///
     /// `fd` must be attached to the driver before using register/unregister
     /// methods.
-    pub fn attach(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
+    pub fn attach(&self, fd: RawFd, id: u32, event: Event) {
+        self.attach_with_mode(fd, id, event, PollMode::Oneshot)
+    }
+
+    /// Attach an fd to the driver with specific mode.
+    ///
+    /// `fd` must be attached to the driver before using register/unregister
+    /// methods.
+    pub fn attach_with_mode(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
         event.key = (id as u64 | self.batch) as usize;
         if let Err(err) = unsafe { self.poll.add_with_mode(fd, event, mode) } {
             self.change(Change::Error {
@@ -66,7 +74,12 @@ impl DriverApi {
     }
 
     /// Register interest for specified file descriptor.
-    pub fn modify(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
+    pub fn modify(&self, fd: RawFd, id: u32, event: Event) {
+        self.modify_with_mode(fd, id, event, PollMode::Oneshot)
+    }
+
+    /// Register interest for specified file descriptor.
+    pub fn modify_with_mode(&self, fd: RawFd, id: u32, mut event: Event, mode: PollMode) {
         event.key = (id as u64 | self.batch) as usize;
 
         let result =
@@ -87,7 +100,7 @@ impl DriverApi {
 }
 
 /// Low-level driver of polling.
-pub(crate) struct Driver {
+pub struct Driver {
     poll: Arc<Poller>,
     capacity: usize,
     changes: Rc<UnsafeCell<VecDeque<Change>>>,
@@ -113,17 +126,20 @@ impl Driver {
     }
 
     /// Driver type
-    pub(crate) const fn tp(&self) -> crate::driver::DriverType {
+    pub const fn tp(&self) -> crate::driver::DriverType {
         crate::driver::DriverType::Poll
     }
 
     /// Register updates handler
-    pub(crate) fn register<F>(&self, f: F)
+    pub fn register<F>(&self, f: F)
     where
         F: FnOnce(DriverApi) -> Box<dyn Handler>,
     {
         let id = self.hid.get();
-        let mut handlers = self.handlers.take().unwrap_or_default();
+        let mut handlers = self
+            .handlers
+            .take()
+            .expect("Cannot register handler during event handling");
 
         let api = DriverApi {
             id: id as usize,
@@ -148,12 +164,7 @@ impl Driver {
         };
 
         loop {
-            let timeout = match f() {
-                super::PollResult::Pending => None,
-                super::PollResult::HasTasks => Some(Duration::ZERO),
-                super::PollResult::Ready(val) => return Ok(val),
-            };
-
+            let result = f();
             let has_changes = !unsafe { (*self.changes.get()).is_empty() };
             if has_changes {
                 let mut handlers = self.handlers.take().unwrap();
@@ -161,6 +172,11 @@ impl Driver {
                 self.handlers.set(Some(handlers));
             }
 
+            let timeout = match result {
+                super::PollResult::Pending => None,
+                super::PollResult::HasTasks => Some(Duration::ZERO),
+                super::PollResult::Ready(val) => return Ok(val),
+            };
             self.poll.wait(&mut events, timeout)?;
 
             let mut handlers = self.handlers.take().unwrap();
