@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.18] - 2025-04-08
+
+* Update io-uring Handler trait
+
 ## [0.1.17] - 2025-04-05
 
 * Revert thread pool changes

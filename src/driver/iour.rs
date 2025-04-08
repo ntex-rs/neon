@@ -9,7 +9,7 @@ use crate::pool::Dispatchable;
 
 pub trait Handler {
     /// Operation is completed
-    fn completed(&mut self, id: usize, flags: u32, result: io::Result<i32>);
+    fn completed(&mut self, id: usize, flags: u32, result: io::Result<usize>);
 
     /// Operation is canceled
     fn canceled(&mut self, id: usize);
