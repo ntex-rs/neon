@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.19] - 2025-05-xx
+
+* Set pool worker thread name
+
 ## [0.1.18] - 2025-04-08
 
 * Update io-uring Handler trait
