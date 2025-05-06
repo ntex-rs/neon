@@ -174,6 +174,7 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
+        let mut must_submit = false;
         let mut ring = self.ring.borrow_mut();
 
         loop {
@@ -186,15 +187,15 @@ impl Driver {
             let has_more = self.apply_changes(&mut ring);
             let poll_result = self.poll_completions(&mut ring);
 
-            let result = if has_more {
-                ring.submit()
-            } else if poll_result {
+            let result = if poll_result && !must_submit {
+                must_submit = true;
                 continue;
-            } else if wait_events {
-                ring.submit_and_wait(1)
-            } else {
+            } else if has_more || !wait_events || must_submit {
                 ring.submit()
+            } else {
+                ring.submit_and_wait(1)
             };
+            must_submit = false;
             if let Err(e) = result {
                 match e.raw_os_error() {
                     Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN) => {}

@@ -62,7 +62,7 @@ polling = "3.7.4"
 
 # Linux specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
-io-uring = { version = "0.7.4", optional = true }
+io-uring = { version = "0.7.6", optional = true }
 polling = { version = "3.7.4", optional = true }
 
 # Other platform dependencies
