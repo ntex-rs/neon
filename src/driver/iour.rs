@@ -3,7 +3,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, io, mem, rc::Rc, syn
 
 use io_uring::cqueue::{more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
-use io_uring::{squeue::Entry as SEntry, types::Fd, IoUring, Probe};
+use io_uring::{squeue::Entry as SEntry, types, types::Fd, IoUring, Probe};
 
 use crate::pool::Dispatchable;
 
@@ -151,6 +151,7 @@ impl Driver {
             match change {
                 Change::Submit { entry } => {
                     if unsafe { squeue.push(&entry) }.is_err() {
+                        log::error!("Ring is full, {:?}", changes.len());
                         changes.push_front(Change::Submit { entry });
                         break;
                     }
@@ -158,6 +159,7 @@ impl Driver {
                 Change::Cancel { op_id } => {
                     let entry = AsyncCancel::new(op_id).build().user_data(Self::CANCEL);
                     if unsafe { squeue.push(&entry) }.is_err() {
+                        log::error!("Ring is full 2, {:?}", changes.len());
                         changes.push_front(Change::Cancel { op_id });
                         break;
                     }
@@ -165,6 +167,10 @@ impl Driver {
             }
         }
         squeue.sync();
+
+        if !changes.is_empty() {
+            log::error!("Apply changes overflow, {:?}", changes.len());
+        }
 
         !changes.is_empty()
     }
@@ -174,9 +180,11 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
-        let mut must_submit = false;
-        let mut ring = self.ring.borrow_mut();
+        let zero = types::Timespec::new();
+        let args = types::SubmitArgs::new().timespec(&zero);
 
+        let mut skip_poll = false;
+        let mut ring = self.ring.borrow_mut();
         loop {
             let wait_events = match f() {
                 super::PollResult::Pending => true,
@@ -187,31 +195,38 @@ impl Driver {
             let has_more = self.apply_changes(&mut ring);
             let poll_result = self.poll_completions(&mut ring);
 
-            let result = if poll_result && !must_submit {
-                must_submit = true;
+            let result = if has_more {
+                skip_poll = false;
+                ring.submitter().submit_with_args(1, &args)
+            } else if poll_result != 0 && !skip_poll {
+                skip_poll = true;
                 continue;
-            } else if has_more || !wait_events || must_submit {
-                ring.submit()
-            } else {
+            } else if wait_events && !skip_poll {
                 ring.submit_and_wait(1)
+            } else {
+                skip_poll = false;
+                ring.submitter().submit_with_args(1, &args)
             };
-            must_submit = false;
             if let Err(e) = result {
                 match e.raw_os_error() {
-                    Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN) => {}
+                    Some(libc::ETIME) => {}
+                    Some(libc::EBUSY) | Some(libc::EAGAIN) => {
+                        log::error!("Ring submit error, {:?}", e);
+                    }
                     _ => return Err(e),
                 }
             }
         }
     }
 
-    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
+    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) -> usize {
         let mut cqueue = ring.completion();
         cqueue.sync();
         if cqueue.is_empty() {
-            return false;
+            return 0;
         }
         let mut handlers = self.handlers.take().unwrap();
+        let size = cqueue.len();
         for entry in cqueue {
             let user_data = entry.user_data();
             match user_data {
@@ -240,7 +255,7 @@ impl Driver {
             }
         }
         self.handlers.set(Some(handlers));
-        true
+        size
     }
 
     /// Get notification handle for this driver
