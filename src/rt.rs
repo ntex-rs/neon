@@ -5,8 +5,7 @@ use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
-use swap_buffer_queue::error::{TryDequeueError, TryEnqueueError};
-use swap_buffer_queue::{buffer::ArrayBuffer, buffer::VecBuffer, Queue};
+use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
 
 use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
@@ -106,7 +105,7 @@ impl Runtime {
 
             self.driver
                 .poll(|| {
-                    delayed |= delayed;
+                    delayed = !delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
                     } else if self.queue.run(delayed) {
@@ -232,7 +231,7 @@ struct RunnableQueue {
     driver: NotifyHandle,
     event_interval: usize,
     local_queue: UnsafeCell<VecDeque<Runnable>>,
-    sync_fixed_queue: Queue<VecBuffer<Runnable>>,
+    sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
     sync_queue: SegQueue<Runnable>,
 }
 
@@ -244,7 +243,7 @@ impl RunnableQueue {
             id: thread::current().id(),
             idle: Cell::new(true),
             local_queue: UnsafeCell::new(VecDeque::new()),
-            sync_fixed_queue: Queue::with_capacity(128),
+            sync_fixed_queue: Queue::default(),
             sync_queue: SegQueue::new(),
         }
     }
@@ -277,35 +276,27 @@ impl RunnableQueue {
             }
         }
 
-        loop {
-            match self.sync_fixed_queue.try_dequeue() {
-                Ok(buf) => {
-                    for task in buf {
+        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+            for task in buf {
+                task.run();
+            }
+        }
+
+        if delayed {
+            for _ in 0..self.event_interval {
+                if !self.sync_queue.is_empty() {
+                    if let Some(task) = self.sync_queue.pop() {
                         task.run();
+                        continue;
                     }
                 }
-                Err(TryDequeueError::Pending) => continue,
-                _ => {}
+                break;
             }
-            break;
         }
-        let sync_fixed_empty = self.sync_fixed_queue.is_empty();
-
-        //if sync_fixed_empty {
-        for _ in 0..self.event_interval {
-            if !self.sync_queue.is_empty() {
-                if let Some(task) = self.sync_queue.pop() {
-                    task.run();
-                    continue;
-                }
-            }
-            break;
-        }
-        // }
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }
-            || !sync_fixed_empty
+            || !self.sync_fixed_queue.is_empty()
             || !self.sync_queue.is_empty()
     }
 
