@@ -180,9 +180,6 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
-        let zero = types::Timespec::new();
-        let args = types::SubmitArgs::new().timespec(&zero);
-
         let mut skip_poll = false;
         let mut ring = self.ring.borrow_mut();
         loop {
@@ -196,7 +193,7 @@ impl Driver {
 
             let result = if has_more {
                 skip_poll = false;
-                ring.submitter().submit_with_args(1, &args)
+                ring.submit()
             } else if poll_result != 0 && !skip_poll {
                 skip_poll = true;
                 continue;
@@ -204,7 +201,7 @@ impl Driver {
                 ring.submit_and_wait(1)
             } else {
                 skip_poll = false;
-                ring.submitter().submit_with_args(1, &args)
+                ring.submit()
             };
             if let Err(e) = result {
                 match e.raw_os_error() {
