@@ -191,7 +191,6 @@ impl Driver {
                 super::PollResult::HasTasks => false,
                 super::PollResult::Ready(val) => return Ok(val),
             };
-
             let has_more = self.apply_changes(&mut ring);
             let poll_result = self.poll_completions(&mut ring);
 

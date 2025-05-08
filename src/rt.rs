@@ -5,8 +5,8 @@ use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
-//use swap_buffer_queue::error::{TryDequeueError, TryEnqueueError};
-//use swap_buffer_queue::{buffer::ArrayBuffer, Queue};
+use swap_buffer_queue::error::{TryDequeueError, TryEnqueueError};
+use swap_buffer_queue::{buffer::ArrayBuffer, Queue};
 
 use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
@@ -101,13 +101,12 @@ impl Runtime {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         CURRENT_RUNTIME.set(self, || {
             let mut result = None;
-            //let mut delayed = false;
-            let delayed = true;
+            let mut delayed = false;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
             self.driver
                 .poll(|| {
-                    // delayed |= delayed;
+                    delayed |= delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
                     } else if self.queue.run(delayed) {
@@ -233,7 +232,7 @@ struct RunnableQueue {
     driver: NotifyHandle,
     event_interval: usize,
     local_queue: UnsafeCell<VecDeque<Runnable>>,
-    //sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
+    sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
     sync_queue: SegQueue<Runnable>,
 }
 
@@ -245,7 +244,7 @@ impl RunnableQueue {
             id: thread::current().id(),
             idle: Cell::new(true),
             local_queue: UnsafeCell::new(VecDeque::new()),
-            //sync_fixed_queue: Queue::default(),
+            sync_fixed_queue: Queue::default(),
             sync_queue: SegQueue::new(),
         }
     }
@@ -258,10 +257,10 @@ impl RunnableQueue {
                 self.driver.notify().ok();
             }
         } else {
-            //let result = self.sync_fixed_queue.try_enqueue([runnable]);
-            //if let Err(TryEnqueueError::InsufficientCapacity([runnable])) = result {
-            self.sync_queue.push(runnable);
-            //}
+            let result = self.sync_fixed_queue.try_enqueue([runnable]);
+            if let Err(TryEnqueueError::InsufficientCapacity([runnable])) = result {
+                self.sync_queue.push(runnable);
+            }
             self.driver.notify().ok();
         }
     }
@@ -278,20 +277,19 @@ impl RunnableQueue {
             }
         }
 
-        // loop {
-        //     match self.sync_fixed_queue.try_dequeue() {
-        //         Ok(buf) => {
-        //             for task in buf {
-        //                 task.run();
-        //             }
-        //         }
-        //         Err(TryDequeueError::Pending) => continue,
-        //         _ => {}
-        //     }
-        //     break;
-        // }
-        // let sync_fixed_empty = self.sync_fixed_queue.is_empty();
-        let sync_fixed_empty = true;
+        loop {
+            match self.sync_fixed_queue.try_dequeue() {
+                Ok(buf) => {
+                    for task in buf {
+                        task.run();
+                    }
+                }
+                Err(TryDequeueError::Pending) => continue,
+                _ => {}
+            }
+            break;
+        }
+        let sync_fixed_empty = self.sync_fixed_queue.is_empty();
 
         if delayed && sync_fixed_empty {
             for _ in 0..self.event_interval {
@@ -313,7 +311,7 @@ impl RunnableQueue {
 
     fn clear(&self) {
         while self.sync_queue.pop().is_some() {}
-        // while self.sync_fixed_queue.try_dequeue().is_ok() {}
+        while self.sync_fixed_queue.try_dequeue().is_ok() {}
         unsafe { (*self.local_queue.get()).clear() };
     }
 }
