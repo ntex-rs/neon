@@ -6,7 +6,7 @@ use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
 use swap_buffer_queue::error::{TryDequeueError, TryEnqueueError};
-use swap_buffer_queue::{buffer::ArrayBuffer, Queue};
+use swap_buffer_queue::{buffer::ArrayBuffer, buffer::VecBuffer, Queue};
 
 use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
@@ -232,7 +232,7 @@ struct RunnableQueue {
     driver: NotifyHandle,
     event_interval: usize,
     local_queue: UnsafeCell<VecDeque<Runnable>>,
-    sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
+    sync_fixed_queue: Queue<VecBuffer<Runnable>>,
     sync_queue: SegQueue<Runnable>,
 }
 
@@ -244,7 +244,7 @@ impl RunnableQueue {
             id: thread::current().id(),
             idle: Cell::new(true),
             local_queue: UnsafeCell::new(VecDeque::new()),
-            sync_fixed_queue: Queue::default(),
+            sync_fixed_queue: Queue::with_capacity(128),
             sync_queue: SegQueue::new(),
         }
     }
@@ -291,17 +291,17 @@ impl RunnableQueue {
         }
         let sync_fixed_empty = self.sync_fixed_queue.is_empty();
 
-        if delayed && sync_fixed_empty {
-            for _ in 0..self.event_interval {
-                if !self.sync_queue.is_empty() {
-                    if let Some(task) = self.sync_queue.pop() {
-                        task.run();
-                        continue;
-                    }
+        //if sync_fixed_empty {
+        for _ in 0..self.event_interval {
+            if !self.sync_queue.is_empty() {
+                if let Some(task) = self.sync_queue.pop() {
+                    task.run();
+                    continue;
                 }
-                break;
             }
+            break;
         }
+        // }
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }
