@@ -142,37 +142,38 @@ impl Driver {
     fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
         let mut changes = self.changes.borrow_mut();
         if changes.is_empty() {
-            return false;
-        }
-        log::debug!("Apply changes, {:?}", changes.len());
+            false
+        } else {
+            log::debug!("Apply changes, {:?}", changes.len());
 
-        let mut squeue = ring.submission();
-        while let Some(change) = changes.pop_front() {
-            match change {
-                Change::Submit { entry } => {
-                    if unsafe { squeue.push(&entry) }.is_err() {
-                        log::error!("Ring is full, {:?}", changes.len());
-                        changes.push_front(Change::Submit { entry });
-                        break;
+            let mut squeue = ring.submission();
+            while let Some(change) = changes.pop_front() {
+                match change {
+                    Change::Submit { entry } => {
+                        if unsafe { squeue.push(&entry) }.is_err() {
+                            log::error!("Ring is full, {:?}", changes.len());
+                            changes.push_front(Change::Submit { entry });
+                            break;
+                        }
                     }
-                }
-                Change::Cancel { op_id } => {
-                    let entry = AsyncCancel::new(op_id).build().user_data(Self::CANCEL);
-                    if unsafe { squeue.push(&entry) }.is_err() {
-                        log::error!("Ring is full 2, {:?}", changes.len());
-                        changes.push_front(Change::Cancel { op_id });
-                        break;
+                    Change::Cancel { op_id } => {
+                        let entry = AsyncCancel::new(op_id).build().user_data(Self::CANCEL);
+                        if unsafe { squeue.push(&entry) }.is_err() {
+                            log::error!("Ring is full 2, {:?}", changes.len());
+                            changes.push_front(Change::Cancel { op_id });
+                            break;
+                        }
                     }
                 }
             }
-        }
-        squeue.sync();
+            squeue.sync();
 
-        if !changes.is_empty() {
-            log::error!("Apply changes overflow, {:?}", changes.len());
-        }
+            if !changes.is_empty() {
+                log::error!("Apply changes overflow, {:?}", changes.len());
+            }
 
-        !changes.is_empty()
+            !changes.is_empty()
+        }
     }
 
     /// Poll the driver and handle completed operations.
@@ -180,19 +181,18 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
-        let mut check = true;
         let mut ring = self.ring.borrow_mut();
         loop {
             self.poll_completions(&mut ring);
 
-            let wait_events = match f() {
-                super::PollResult::Pending => true,
-                super::PollResult::HasTasks => false,
+            let more_tasks = match f() {
+                super::PollResult::Pending => false,
+                super::PollResult::HasTasks => true,
                 super::PollResult::Ready(val) => return Ok(val),
             };
-            let has_more = self.apply_changes(&mut ring);
+            let more_changes = self.apply_changes(&mut ring);
 
-            let result = if has_more || !wait_events {
+            let result = if more_changes || more_tasks {
                 ring.submit()
             } else {
                 ring.submit_and_wait(1)
