@@ -180,28 +180,22 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
-        let mut skip_poll = false;
+        let mut check = true;
         let mut ring = self.ring.borrow_mut();
         loop {
+            self.poll_completions(&mut ring);
+
             let wait_events = match f() {
                 super::PollResult::Pending => true,
                 super::PollResult::HasTasks => false,
                 super::PollResult::Ready(val) => return Ok(val),
             };
             let has_more = self.apply_changes(&mut ring);
-            let poll_result = self.poll_completions(&mut ring);
 
-            let result = if has_more {
-                skip_poll = false;
+            let result = if has_more || !wait_events {
                 ring.submit()
-            } else if poll_result != 0 && !skip_poll {
-                skip_poll = true;
-                continue;
-            } else if wait_events && !skip_poll {
-                ring.submit_and_wait(1)
             } else {
-                skip_poll = false;
-                ring.submit()
+                ring.submit_and_wait(1)
             };
             if let Err(e) = result {
                 match e.raw_os_error() {
