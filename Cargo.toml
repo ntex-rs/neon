@@ -1,6 +1,6 @@
 [package]
 name = "ntex-neon"
-version = "0.1.18"
+version = "0.1.19"
 description = "Async runtime for ntex"
 categories = ["asynchronous"]
 keywords = ["async", "runtime"]
@@ -62,7 +62,7 @@ polling = "3.7.4"
 
 # Linux specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
-io-uring = { version = "0.7.4", optional = true }
+io-uring = { version = "0.7.6", optional = true }
 polling = { version = "3.7.4", optional = true }
 
 # Other platform dependencies

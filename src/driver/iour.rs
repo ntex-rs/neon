@@ -3,7 +3,7 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, io, mem, rc::Rc, syn
 
 use io_uring::cqueue::{more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
-use io_uring::{squeue::Entry as SEntry, types::Fd, IoUring, Probe};
+use io_uring::{squeue::Entry as SEntry, types, types::Fd, IoUring, Probe};
 
 use crate::pool::Dispatchable;
 
@@ -139,107 +139,110 @@ impl Driver {
         self.hid.set(id + 1);
     }
 
-    fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
-        let mut changes = self.changes.borrow_mut();
-        if changes.is_empty() {
-            return false;
-        }
-        log::debug!("Apply changes, {:?}", changes.len());
-
-        let mut squeue = ring.submission();
-        while let Some(change) = changes.pop_front() {
-            match change {
-                Change::Submit { entry } => {
-                    if unsafe { squeue.push(&entry) }.is_err() {
-                        changes.push_front(Change::Submit { entry });
-                        break;
-                    }
-                }
-                Change::Cancel { op_id } => {
-                    let entry = AsyncCancel::new(op_id).build().user_data(Self::CANCEL);
-                    if unsafe { squeue.push(&entry) }.is_err() {
-                        changes.push_front(Change::Cancel { op_id });
-                        break;
-                    }
-                }
-            }
-        }
-        squeue.sync();
-
-        !changes.is_empty()
-    }
-
     /// Poll the driver and handle completed operations.
-    pub(crate) fn poll<T, F>(&self, mut f: F) -> io::Result<T>
+    pub(crate) fn poll<T, F>(&self, mut run: F) -> io::Result<T>
     where
         F: FnMut() -> super::PollResult<T>,
     {
         let mut ring = self.ring.borrow_mut();
-
         loop {
-            let wait_events = match f() {
-                super::PollResult::Pending => true,
-                super::PollResult::HasTasks => false,
+            self.poll_completions(&mut ring);
+
+            let more_tasks = match run() {
+                super::PollResult::Pending => false,
+                super::PollResult::HasTasks => true,
                 super::PollResult::Ready(val) => return Ok(val),
             };
+            let more_changes = self.apply_changes(&mut ring);
 
-            let has_more = self.apply_changes(&mut ring);
-            let poll_result = self.poll_completions(&mut ring);
-
-            let result = if has_more {
+            let result = if more_changes || more_tasks {
                 ring.submit()
-            } else if poll_result {
-                continue;
-            } else if wait_events {
-                ring.submit_and_wait(1)
             } else {
-                ring.submit()
+                ring.submit_and_wait(1)
             };
             if let Err(e) = result {
                 match e.raw_os_error() {
-                    Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN) => {}
+                    Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN) => {
+                        log::error!("Ring submit error, {:?}", e);
+                    }
                     _ => return Err(e),
                 }
             }
         }
     }
 
-    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
-        let mut cqueue = ring.completion();
-        cqueue.sync();
-        if cqueue.is_empty() {
-            return false;
-        }
-        let mut handlers = self.handlers.take().unwrap();
-        for entry in cqueue {
-            let user_data = entry.user_data();
-            match user_data {
-                Self::CANCEL => {}
-                Self::NOTIFY => {
-                    let flags = entry.flags();
-                    debug_assert!(more(flags));
-                    self.notifier.clear().expect("cannot clear notifier");
-                }
-                _ => {
-                    let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
-                    let user_data = (user_data & Self::DATA_MASK) as usize;
+    fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
+        let mut changes = self.changes.borrow_mut();
+        if changes.is_empty() {
+            false
+        } else {
+            log::debug!("Apply changes, {:?}", changes.len());
 
-                    let result = entry.result();
-                    if result == -libc::ECANCELED {
-                        handlers[batch].canceled(user_data);
-                    } else {
-                        let result = if result < 0 {
-                            Err(io::Error::from_raw_os_error(-result))
-                        } else {
-                            Ok(result as _)
-                        };
-                        handlers[batch].completed(user_data, entry.flags(), result);
+            let mut squeue = ring.submission();
+            while let Some(change) = changes.pop_front() {
+                match change {
+                    Change::Submit { entry } => {
+                        if unsafe { squeue.push(&entry) }.is_err() {
+                            log::error!("Ring is full, {:?}", changes.len());
+                            changes.push_front(Change::Submit { entry });
+                            break;
+                        }
+                    }
+                    Change::Cancel { op_id } => {
+                        let entry = AsyncCancel::new(op_id).build().user_data(Self::CANCEL);
+                        if unsafe { squeue.push(&entry) }.is_err() {
+                            log::error!("Ring is full 2, {:?}", changes.len());
+                            changes.push_front(Change::Cancel { op_id });
+                            break;
+                        }
                     }
                 }
             }
+            squeue.sync();
+
+            if !changes.is_empty() {
+                log::error!("Apply changes overflow, {:?}", changes.len());
+            }
+
+            !changes.is_empty()
         }
-        self.handlers.set(Some(handlers));
-        true
+    }
+
+    /// Handle ring completions, forward changes to specific handler
+    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) {
+        let mut cqueue = ring.completion();
+        cqueue.sync();
+        if !cqueue.is_empty() {
+            let mut handlers = self.handlers.take().unwrap();
+            for entry in cqueue {
+                let user_data = entry.user_data();
+                match user_data {
+                    Self::CANCEL => {}
+                    Self::NOTIFY => {
+                        let flags = entry.flags();
+                        debug_assert!(more(flags));
+                        self.notifier.clear().expect("cannot clear notifier");
+                    }
+                    _ => {
+                        let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                        let user_data = (user_data & Self::DATA_MASK) as usize;
+
+                        let result = entry.result();
+                        if result == -libc::ECANCELED {
+                            handlers[batch].canceled(user_data);
+                        } else {
+                            let result = if result < 0 {
+                                Err(io::Error::from_raw_os_error(-result))
+                            } else {
+                                Ok(result as _)
+                            };
+                            handlers[batch].completed(user_data, entry.flags(), result);
+                        }
+                    }
+                }
+            }
+            self.handlers.set(Some(handlers));
+        }
     }
 
     /// Get notification handle for this driver

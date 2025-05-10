@@ -5,8 +5,7 @@ use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
-use swap_buffer_queue::error::{TryDequeueError, TryEnqueueError};
-use swap_buffer_queue::{buffer::ArrayBuffer, Queue};
+use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
 
 use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
@@ -106,7 +105,7 @@ impl Runtime {
 
             self.driver
                 .poll(|| {
-                    delayed |= delayed;
+                    delayed = !delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
                     } else if self.queue.run(delayed) {
@@ -277,21 +276,13 @@ impl RunnableQueue {
             }
         }
 
-        loop {
-            match self.sync_fixed_queue.try_dequeue() {
-                Ok(buf) => {
-                    for task in buf {
-                        task.run();
-                    }
-                }
-                Err(TryDequeueError::Pending) => continue,
-                _ => {}
+        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+            for task in buf {
+                task.run();
             }
-            break;
         }
-        let sync_fixed_empty = self.sync_fixed_queue.is_empty();
 
-        if delayed && sync_fixed_empty {
+        if delayed {
             for _ in 0..self.event_interval {
                 if !self.sync_queue.is_empty() {
                     if let Some(task) = self.sync_queue.pop() {
@@ -305,7 +296,7 @@ impl RunnableQueue {
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }
-            || !sync_fixed_empty
+            || !self.sync_fixed_queue.is_empty()
             || !self.sync_queue.is_empty()
     }
 
@@ -338,7 +329,7 @@ impl RuntimeBuilder {
             event_interval: 61,
             pool_limit: 256,
             pool_recv_timeout: Duration::from_secs(60),
-            io_queue_capacity: 1024,
+            io_queue_capacity: 2048,
         }
     }
 
@@ -352,7 +343,7 @@ impl RuntimeBuilder {
     }
 
     /// Set the capacity of the inner event queue or submission queue, if
-    /// exists. The default value is 1024.
+    /// exists. The default value is 2048.
     pub fn io_queue_capacity(&mut self, capacity: u32) -> &mut Self {
         self.io_queue_capacity = capacity;
         self

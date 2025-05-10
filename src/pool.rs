@@ -90,14 +90,18 @@ impl ThreadPool {
             Ok(_) => Ok(()),
             Err(e) => match e {
                 TrySendError::Full(f) => {
-                    if self.counter.load(Ordering::Acquire) >= self.thread_limit {
+                    let cnt = self.counter.load(Ordering::Acquire);
+                    if cnt >= self.thread_limit {
                         Err(DispatchError)
                     } else {
-                        thread::spawn(worker(
-                            self.receiver.clone(),
-                            self.counter.clone(),
-                            self.recv_timeout,
-                        ));
+                        thread::Builder::new()
+                            .name(format!("pool-wrk:{}", cnt))
+                            .spawn(worker(
+                                self.receiver.clone(),
+                                self.counter.clone(),
+                                self.recv_timeout,
+                            ))
+                            .expect("Cannot construct new thread");
                         self.sender.send(f).expect("the channel should not be full");
                         Ok(())
                     }
