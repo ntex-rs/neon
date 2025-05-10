@@ -209,43 +209,41 @@ impl Driver {
         }
     }
 
-    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) -> usize {
+    /// Handle ring completions, forward changes to specific handler
+    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) {
         let mut cqueue = ring.completion();
         cqueue.sync();
-        if cqueue.is_empty() {
-            return 0;
-        }
-        let mut handlers = self.handlers.take().unwrap();
-        let size = cqueue.len();
-        for entry in cqueue {
-            let user_data = entry.user_data();
-            match user_data {
-                Self::CANCEL => {}
-                Self::NOTIFY => {
-                    let flags = entry.flags();
-                    debug_assert!(more(flags));
-                    self.notifier.clear().expect("cannot clear notifier");
-                }
-                _ => {
-                    let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
-                    let user_data = (user_data & Self::DATA_MASK) as usize;
+        if !cqueue.is_empty() {
+            let mut handlers = self.handlers.take().unwrap();
+            for entry in cqueue {
+                let user_data = entry.user_data();
+                match user_data {
+                    Self::CANCEL => {}
+                    Self::NOTIFY => {
+                        let flags = entry.flags();
+                        debug_assert!(more(flags));
+                        self.notifier.clear().expect("cannot clear notifier");
+                    }
+                    _ => {
+                        let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                        let user_data = (user_data & Self::DATA_MASK) as usize;
 
-                    let result = entry.result();
-                    if result == -libc::ECANCELED {
-                        handlers[batch].canceled(user_data);
-                    } else {
-                        let result = if result < 0 {
-                            Err(io::Error::from_raw_os_error(-result))
+                        let result = entry.result();
+                        if result == -libc::ECANCELED {
+                            handlers[batch].canceled(user_data);
                         } else {
-                            Ok(result as _)
-                        };
-                        handlers[batch].completed(user_data, entry.flags(), result);
+                            let result = if result < 0 {
+                                Err(io::Error::from_raw_os_error(-result))
+                            } else {
+                                Ok(result as _)
+                            };
+                            handlers[batch].completed(user_data, entry.flags(), result);
+                        }
                     }
                 }
             }
+            self.handlers.set(Some(handlers));
         }
-        self.handlers.set(Some(handlers));
-        size
     }
 
     /// Get notification handle for this driver

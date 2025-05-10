@@ -329,7 +329,7 @@ impl RuntimeBuilder {
             event_interval: 61,
             pool_limit: 256,
             pool_recv_timeout: Duration::from_secs(60),
-            io_queue_capacity: 1024,
+            io_queue_capacity: 2048,
         }
     }
 
@@ -343,7 +343,7 @@ impl RuntimeBuilder {
     }
 
     /// Set the capacity of the inner event queue or submission queue, if
-    /// exists. The default value is 1024.
+    /// exists. The default value is 2048.
     pub fn io_queue_capacity(&mut self, capacity: u32) -> &mut Self {
         self.io_queue_capacity = capacity;
         self
