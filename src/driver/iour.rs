@@ -139,6 +139,38 @@ impl Driver {
         self.hid.set(id + 1);
     }
 
+    /// Poll the driver and handle completed operations.
+    pub(crate) fn poll<T, F>(&self, mut run: F) -> io::Result<T>
+    where
+        F: FnMut() -> super::PollResult<T>,
+    {
+        let mut ring = self.ring.borrow_mut();
+        loop {
+            self.poll_completions(&mut ring);
+
+            let more_tasks = match run() {
+                super::PollResult::Pending => false,
+                super::PollResult::HasTasks => true,
+                super::PollResult::Ready(val) => return Ok(val),
+            };
+            let more_changes = self.apply_changes(&mut ring);
+
+            let result = if more_changes || more_tasks {
+                ring.submit()
+            } else {
+                ring.submit_and_wait(1)
+            };
+            if let Err(e) = result {
+                match e.raw_os_error() {
+                    Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN) => {
+                        log::error!("Ring submit error, {:?}", e);
+                    }
+                    _ => return Err(e),
+                }
+            }
+        }
+    }
+
     fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
         let mut changes = self.changes.borrow_mut();
         if changes.is_empty() {
@@ -173,39 +205,6 @@ impl Driver {
             }
 
             !changes.is_empty()
-        }
-    }
-
-    /// Poll the driver and handle completed operations.
-    pub(crate) fn poll<T, F>(&self, mut f: F) -> io::Result<T>
-    where
-        F: FnMut() -> super::PollResult<T>,
-    {
-        let mut ring = self.ring.borrow_mut();
-        loop {
-            self.poll_completions(&mut ring);
-
-            let more_tasks = match f() {
-                super::PollResult::Pending => false,
-                super::PollResult::HasTasks => true,
-                super::PollResult::Ready(val) => return Ok(val),
-            };
-            let more_changes = self.apply_changes(&mut ring);
-
-            let result = if more_changes || more_tasks {
-                ring.submit()
-            } else {
-                ring.submit_and_wait(1)
-            };
-            if let Err(e) = result {
-                match e.raw_os_error() {
-                    Some(libc::ETIME) => {}
-                    Some(libc::EBUSY) | Some(libc::EAGAIN) => {
-                        log::error!("Ring submit error, {:?}", e);
-                    }
-                    _ => return Err(e),
-                }
-            }
         }
     }
 
