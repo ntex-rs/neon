@@ -1,10 +1,10 @@
 # Changes
 
-## [0.1.19] - 2025-05-08
+## [0.1.19] - 2025-05-10
 
 * Set pool worker thread name
 
-* Fix remote wakers queue
+* Fix remote wakers queue handling
 
 ## [0.1.18] - 2025-04-08
 
