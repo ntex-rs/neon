@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.21] - 2025-05-13
+
+* Handle EINTR error
+
 ## [0.1.20] - 2025-05-13
 
 * Use io-uring fork temporary
