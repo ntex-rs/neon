@@ -1,11 +1,14 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::{cell::Cell, cell::RefCell, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
+use std::{cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
 
-use io_uring::cqueue::{more, Entry as CEntry};
+use io_uring::cqueue::{self, more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
-use io_uring::{squeue::Entry as SEntry, types, types::Fd, IoUring, Probe};
+use io_uring::squeue::{self, Entry as SEntry};
+use io_uring::{types::Fd, IoUring, Probe};
 
 use crate::pool::Dispatchable;
+
+pub use io_uring;
 
 pub trait Handler {
     /// Operation is completed
@@ -13,12 +16,6 @@ pub trait Handler {
 
     /// Operation is canceled
     fn canceled(&mut self, id: usize);
-}
-
-#[derive(Debug)]
-enum Change {
-    Submit { entry: SEntry },
-    Cancel { op_id: u64 },
 }
 
 #[inline(always)]
@@ -30,7 +27,7 @@ pub struct DriverApi {
     id: usize,
     batch: u64,
     probe: Rc<Probe>,
-    changes: Rc<RefCell<VecDeque<Change>>>,
+    changes: Rc<RefCell<VecDeque<SEntry>>>,
 }
 
 impl DriverApi {
@@ -43,18 +40,20 @@ impl DriverApi {
             id,
             entry
         );
-        self.changes.borrow_mut().push_back(Change::Submit {
-            entry: entry.user_data(id as u64 | self.batch),
-        });
+        self.changes
+            .borrow_mut()
+            .push_back(entry.user_data(id as u64 | self.batch));
     }
 
     #[inline]
     /// Attempt to cancel an already issued request.
     pub fn cancel(&self, id: u32) {
         log::debug!("Cancel op batch({:?}) id: {:?}", self.id, id);
-        self.changes.borrow_mut().push_back(Change::Cancel {
-            op_id: id as u64 | self.batch,
-        });
+        self.changes.borrow_mut().push_back(
+            AsyncCancel::new(id as u64 | self.batch)
+                .build()
+                .user_data(Driver::CANCEL),
+        );
     }
 
     /// Get whether a specific io-uring opcode is supported.
@@ -71,7 +70,7 @@ pub struct Driver {
 
     hid: Cell<u64>,
     probe: Rc<Probe>,
-    changes: Rc<RefCell<VecDeque<Change>>>,
+    changes: Rc<RefCell<VecDeque<SEntry>>>,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
@@ -145,20 +144,21 @@ impl Driver {
         F: FnMut() -> super::PollResult<T>,
     {
         let mut ring = self.ring.borrow_mut();
+        let (submitter, mut sq, mut cq) = ring.split();
         loop {
-            self.poll_completions(&mut ring);
+            self.poll_completions(&mut cq);
 
             let more_tasks = match run() {
                 super::PollResult::Pending => false,
                 super::PollResult::HasTasks => true,
                 super::PollResult::Ready(val) => return Ok(val),
             };
-            let more_changes = self.apply_changes(&mut ring);
+            let more_changes = self.apply_changes(&mut sq);
 
             let result = if more_changes || more_tasks {
-                ring.submit()
+                submitter.submit()
             } else {
-                ring.submit_and_wait(1)
+                submitter.submit_and_wait(1)
             };
             if let Err(e) = result {
                 match e.raw_os_error() {
@@ -171,50 +171,37 @@ impl Driver {
         }
     }
 
-    fn apply_changes(&self, ring: &mut IoUring<SEntry, CEntry>) -> bool {
+    fn apply_changes(&self, sq: &mut squeue::SubmissionQueue<'_>) -> bool {
         let mut changes = self.changes.borrow_mut();
         if changes.is_empty() {
             false
         } else {
             log::debug!("Apply changes, {:?}", changes.len());
 
-            let mut squeue = ring.submission();
-            while let Some(change) = changes.pop_front() {
-                match change {
-                    Change::Submit { entry } => {
-                        if unsafe { squeue.push(&entry) }.is_err() {
-                            log::error!("Ring is full, {:?}", changes.len());
-                            changes.push_front(Change::Submit { entry });
-                            break;
-                        }
-                    }
-                    Change::Cancel { op_id } => {
-                        let entry = AsyncCancel::new(op_id).build().user_data(Self::CANCEL);
-                        if unsafe { squeue.push(&entry) }.is_err() {
-                            log::error!("Ring is full 2, {:?}", changes.len());
-                            changes.push_front(Change::Cancel { op_id });
-                            break;
-                        }
-                    }
-                }
+            let num = cmp::min(changes.len(), sq.capacity() - sq.len());
+            let (s1, s2) = changes.as_slices();
+            let s1_num = cmp::min(s1.len(), num);
+            if s1_num > 0 {
+                unsafe { sq.push_multiple(&s1[0..s1_num]) }.unwrap();
             }
-            squeue.sync();
-
-            if !changes.is_empty() {
-                log::error!("Apply changes overflow, {:?}", changes.len());
+            let s2_num = cmp::min(s2.len(), num - s1_num);
+            if s2_num > 0 {
+                unsafe { sq.push_multiple(&s2[0..s2_num]) }.unwrap();
             }
+            changes.drain(0..num);
+            sq.sync();
 
             !changes.is_empty()
         }
     }
 
+    #[allow(unstable_name_collisions)]
     /// Handle ring completions, forward changes to specific handler
-    fn poll_completions(&self, ring: &mut IoUring<SEntry, CEntry>) {
-        let mut cqueue = ring.completion();
-        cqueue.sync();
-        if !cqueue.is_empty() {
+    fn poll_completions(&self, cq: &mut cqueue::CompletionQueue<'_, CEntry>) {
+        cq.sync();
+        if !cq.is_empty() {
             let mut handlers = self.handlers.take().unwrap();
-            for entry in cqueue {
+            for entry in cq {
                 let user_data = entry.user_data();
                 match user_data {
                     Self::CANCEL => {}

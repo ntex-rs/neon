@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.20] - 2025-05-13
+
+* Use io-uring fork temporary
+
 ## [0.1.19] - 2025-05-10
 
 * Set pool worker thread name
