@@ -3,7 +3,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 use std::{collections::VecDeque, num::NonZeroUsize, time::Duration};
 use std::{io, rc::Rc, sync::Arc};
 
-pub use polling::{Event, PollMode};
+pub use polling::{self, Event, PollMode};
 use polling::{Events, Poller};
 
 pub trait Handler {

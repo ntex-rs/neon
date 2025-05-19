@@ -1,6 +1,6 @@
 [package]
 name = "ntex-neon"
-version = "0.1.21"
+version = "0.1.22"
 description = "Async runtime for ntex"
 categories = ["asynchronous"]
 keywords = ["async", "runtime"]
@@ -58,16 +58,16 @@ windows-sys = { version = "0.52.0", features = [
 # Unix specific dependencies
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.164"
-polling = "3.7.4"
+polling = { version = "3.7.4", package = "ntex-polling" }
 
 # Linux specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = { version = "0.7.7", optional = true, package = "ntex-io-uring" }
-polling = { version = "3.7.4", optional = true }
+polling = { version = "3.7.4", optional = true, package = "ntex-polling" }
 
 # Other platform dependencies
 [target.'cfg(all(not(target_os = "linux"), unix))'.dependencies]
-polling = { version = "3.7.4" }
+polling = { version = "3.7.4", package = "ntex-polling" }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.52.0", features = ["Win32_UI_WindowsAndMessaging"] }

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.22] - 2025-05-19
+
+* Use polling fork temporary
+
 ## [0.1.21] - 2025-05-13
 
 * Handle EINTR error
