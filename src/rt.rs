@@ -100,15 +100,13 @@ impl Runtime {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         CURRENT_RUNTIME.set(self, || {
             let mut result = None;
-            let mut delayed = false;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
             self.driver
                 .poll(|| {
-                    delayed = !delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
-                    } else if self.queue.run(delayed) {
+                    } else if self.queue.run() {
                         PollResult::HasTasks
                     } else {
                         PollResult::Pending
@@ -231,7 +229,7 @@ struct RunnableQueue {
     driver: NotifyHandle,
     event_interval: usize,
     local_queue: UnsafeCell<VecDeque<Runnable>>,
-    // sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
+    sync_fixed_queue: Queue<ArrayBuffer<Runnable, 128>>,
     sync_queue: SegQueue<Runnable>,
 }
 
@@ -243,7 +241,7 @@ impl RunnableQueue {
             id: thread::current().id(),
             idle: Cell::new(true),
             local_queue: UnsafeCell::new(VecDeque::new()),
-            // sync_fixed_queue: Queue::default(),
+            sync_fixed_queue: Queue::default(),
             sync_queue: SegQueue::new(),
         }
     }
@@ -256,15 +254,15 @@ impl RunnableQueue {
                 self.driver.notify().ok();
             }
         } else {
-            //let result = self.sync_fixed_queue.try_enqueue([runnable]);
-            //if let Err(TryEnqueueError::InsufficientCapacity([runnable])) = result {
-            self.sync_queue.push(runnable);
-            //}
+            let result = self.sync_fixed_queue.try_enqueue([runnable]);
+            if let Err(TryEnqueueError::InsufficientCapacity([runnable])) = result {
+                self.sync_queue.push(runnable);
+            }
             self.driver.notify().ok();
         }
     }
 
-    fn run(&self, _delayed: bool) -> bool {
+    fn run(&self) -> bool {
         self.idle.set(false);
 
         for _ in 0..self.event_interval {
@@ -276,13 +274,12 @@ impl RunnableQueue {
             }
         }
 
-        // if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
-        //     for task in buf {
-        //         task.run();
-        //     }
-        // }
+        if let Ok(buf) = self.sync_fixed_queue.try_dequeue() {
+            for task in buf {
+                task.run();
+            }
+        }
 
-        // if delayed {
         for _ in 0..self.event_interval {
             if !self.sync_queue.is_empty() {
                 if let Some(task) = self.sync_queue.pop() {
@@ -292,17 +289,16 @@ impl RunnableQueue {
             }
             break;
         }
-        //}
         self.idle.set(true);
 
         !unsafe { (*self.local_queue.get()).is_empty() }
-            // || !self.sync_fixed_queue.is_empty()
+            || !self.sync_fixed_queue.is_empty()
             || !self.sync_queue.is_empty()
     }
 
     fn clear(&self) {
         while self.sync_queue.pop().is_some() {}
-        // while self.sync_fixed_queue.try_dequeue().is_ok() {}
+        while self.sync_fixed_queue.try_dequeue().is_ok() {}
         unsafe { (*self.local_queue.get()).clear() };
     }
 }
@@ -326,7 +322,7 @@ impl RuntimeBuilder {
     /// Create the builder with default config.
     pub fn new() -> Self {
         Self {
-            event_interval: 61,
+            event_interval: 128,
             pool_limit: 256,
             pool_recv_timeout: Duration::from_secs(60),
             io_queue_capacity: 2048,
