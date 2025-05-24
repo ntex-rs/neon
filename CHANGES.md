@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.23] - 2025-05-24
+
+* Tune scheduler events handling
+
 ## [0.1.22] - 2025-05-19
 
 * Use polling fork temporary
