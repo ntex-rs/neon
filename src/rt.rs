@@ -322,7 +322,7 @@ impl RuntimeBuilder {
     /// Create the builder with default config.
     pub fn new() -> Self {
         Self {
-            event_interval: 128,
+            event_interval: 61,
             pool_limit: 256,
             pool_recv_timeout: Duration::from_secs(60),
             io_queue_capacity: 2048,
