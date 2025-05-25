@@ -100,15 +100,13 @@ impl Runtime {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         CURRENT_RUNTIME.set(self, || {
             let mut result = None;
-            let mut delayed = false;
             unsafe { self.spawn_unchecked(async { result = Some(future.await) }) }.detach();
 
             self.driver
                 .poll(|| {
-                    delayed = !delayed;
                     if let Some(result) = result.take() {
                         PollResult::Ready(result)
-                    } else if self.queue.run(delayed) {
+                    } else if self.queue.run() {
                         PollResult::HasTasks
                     } else {
                         PollResult::Pending
@@ -264,7 +262,7 @@ impl RunnableQueue {
         }
     }
 
-    fn run(&self, delayed: bool) -> bool {
+    fn run(&self) -> bool {
         self.idle.set(false);
 
         for _ in 0..self.event_interval {
@@ -282,16 +280,14 @@ impl RunnableQueue {
             }
         }
 
-        if delayed {
-            for _ in 0..self.event_interval {
-                if !self.sync_queue.is_empty() {
-                    if let Some(task) = self.sync_queue.pop() {
-                        task.run();
-                        continue;
-                    }
+        for _ in 0..self.event_interval {
+            if !self.sync_queue.is_empty() {
+                if let Some(task) = self.sync_queue.pop() {
+                    task.run();
+                    continue;
                 }
-                break;
             }
+            break;
         }
         self.idle.set(true);
 
