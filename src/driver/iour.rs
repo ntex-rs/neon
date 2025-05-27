@@ -99,17 +99,17 @@ impl Driver {
 
     /// Create io-uring driver
     pub(crate) fn new(capacity: u32) -> io::Result<Self> {
-        log::trace!("New io-uring driver");
-
         let is_new = is_new_kernel();
 
         let mut ring = if is_new {
+            log::info!("New io-uring driver with single-issuer, coop-taskrun, defer-taskrun");
             IoUring::builder()
                 .setup_coop_taskrun()
                 .setup_single_issuer()
                 .setup_defer_taskrun()
                 .build(capacity)?
         } else {
+            log::info!("New io-uring driver");
             IoUring::builder().build(capacity)?
         };
 
