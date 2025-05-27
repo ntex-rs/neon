@@ -104,7 +104,7 @@ impl Driver {
         let mut ring = if is_new {
             log::info!("New io-uring driver with single-issuer, coop-taskrun, defer-taskrun");
             IoUring::builder()
-                .setup_coop_taskrun()
+                //.setup_coop_taskrun()
                 .setup_single_issuer()
                 .setup_defer_taskrun()
                 .build(capacity)?
