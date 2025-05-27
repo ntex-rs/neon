@@ -82,14 +82,6 @@ pub struct Driver {
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
 }
 
-// returns true if kernel is 6.1 or greater
-fn is_new_kernel() -> bool {
-    IoUring::<SEntry, CEntry>::builder()
-        .setup_defer_taskrun()
-        .build(1024)
-        .is_ok()
-}
-
 impl Driver {
     const NOTIFY: u64 = u64::MAX;
     const CANCEL: u64 = u64::MAX - 1;
@@ -99,18 +91,22 @@ impl Driver {
 
     /// Create io-uring driver
     pub(crate) fn new(capacity: u32) -> io::Result<Self> {
-        let is_new = is_new_kernel();
-
-        let mut ring = if is_new {
+        // Create ring
+        let (is_new, mut ring) = if let Ok(ring) = IoUring::builder()
+            .setup_coop_taskrun()
+            .setup_single_issuer()
+            .setup_defer_taskrun()
+            .build(capacity)
+        {
             log::info!("New io-uring driver with single-issuer, coop-taskrun, defer-taskrun");
-            IoUring::builder()
-                .setup_coop_taskrun()
-                .setup_single_issuer()
-                .setup_defer_taskrun()
-                .build(capacity)?
+            (true, ring)
+        } else if let Ok(ring) = IoUring::builder().setup_single_issuer().build(capacity) {
+            log::info!("New io-uring driver with single-issuer");
+            (true, ring)
         } else {
+            let ring = IoUring::builder().build(capacity)?;
             log::info!("New io-uring driver");
-            IoUring::builder().build(capacity)?
+            (false, ring)
         };
 
         let mut probe = Probe::new();
