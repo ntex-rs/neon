@@ -90,11 +90,15 @@ fn create(cap: u32) -> io::Result<(bool, IoUring<SEntry, CEntry>)> {
         .setup_defer_taskrun()
         .build(cap)
     {
+        log::info!("New io-uring driver with single-issuer, coop-taskrun, defer-taskrun");
         Ok((true, ring))
     } else if let Ok(ring) = IoUring::builder().setup_single_issuer().build(cap) {
+        log::info!("New io-uring driver with single-issuer");
         Ok((true, ring))
     } else {
-        Ok((false, IoUring::builder().build(cap)?))
+        let ring = IoUring::builder().build(cap)?;
+        log::info!("New io-uring driver");
+        Ok((false, ring))
     }
 }
 
@@ -108,11 +112,6 @@ impl Driver {
     /// Create io-uring driver
     pub(crate) fn new(capacity: u32) -> io::Result<Self> {
         let (is_new, mut ring) = create(capacity)?;
-        if is_new {
-            log::info!("New io-uring driver with single-issuer, coop-taskrun, defer-taskrun");
-        } else {
-            log::info!("New io-uring driver");
-        };
 
         let mut probe = Probe::new();
         ring.submitter().register_probe(&mut probe)?;
