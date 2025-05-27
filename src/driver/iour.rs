@@ -1,5 +1,7 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::{cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
+use std::{
+    cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc,
+};
 
 use io_uring::cqueue::{self, more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
@@ -19,18 +21,29 @@ pub trait Handler {
 }
 
 #[inline(always)]
-pub(crate) fn spawn_blocking(rt: &crate::Runtime, _: &Driver, f: Box<dyn Dispatchable + Send>) {
+pub(crate) fn spawn_blocking(
+    rt: &crate::Runtime,
+    _: &Driver,
+    f: Box<dyn Dispatchable + Send>,
+) {
     let _ = rt.pool.dispatch(f);
 }
 
 pub struct DriverApi {
     id: usize,
     batch: u64,
+    is_new: bool,
     probe: Rc<Probe>,
     changes: Rc<RefCell<VecDeque<SEntry>>>,
 }
 
 impl DriverApi {
+    #[inline]
+    /// Check if kernel ver 6.1 or greater
+    pub fn is_new(&self) -> bool {
+        self.is_new
+    }
+
     #[inline]
     /// Submit request to the driver.
     pub fn submit(&self, id: u32, entry: SEntry) {
@@ -66,6 +79,7 @@ impl DriverApi {
 pub struct Driver {
     fd: RawFd,
     ring: RefCell<IoUring<SEntry, CEntry>>,
+    is_new: bool,
     notifier: Notifier,
 
     hid: Cell<u64>,
@@ -120,6 +134,7 @@ impl Driver {
                 .expect("the squeue sould not be full");
         }
         Ok(Self {
+            is_new,
             notifier,
             fd: ring.as_raw_fd(),
             ring: RefCell::new(ring),
@@ -145,6 +160,7 @@ impl Driver {
         handlers.push(f(DriverApi {
             id: id as usize,
             batch: id << Self::BATCH,
+            is_new: self.is_new,
             probe: self.probe.clone(),
             changes: self.changes.clone(),
         }));
@@ -226,7 +242,8 @@ impl Driver {
                         self.notifier.clear().expect("cannot clear notifier");
                     }
                     _ => {
-                        let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                        let batch =
+                            ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
                         let user_data = (user_data & Self::DATA_MASK) as usize;
 
                         let result = entry.result();

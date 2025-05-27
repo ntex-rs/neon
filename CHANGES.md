@@ -2,7 +2,7 @@
 
 ## [0.1.24] - 2025-05-27
 
-* Detect io-uring setup features
+* Detect kernel 6.1 or greater for io-uring config
 
 ## [0.1.23] - 2025-05-24
 
