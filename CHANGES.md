@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.25] - 2025-05-27
+
+* Clear events list for poll driver
+
 ## [0.1.24] - 2025-05-27
 
 * Detect kernel 6.1 or greater for io-uring config

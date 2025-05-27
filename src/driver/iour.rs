@@ -1,7 +1,5 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::{
-    cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc,
-};
+use std::{cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
 
 use io_uring::cqueue::{self, more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
@@ -21,11 +19,7 @@ pub trait Handler {
 }
 
 #[inline(always)]
-pub(crate) fn spawn_blocking(
-    rt: &crate::Runtime,
-    _: &Driver,
-    f: Box<dyn Dispatchable + Send>,
-) {
+pub(crate) fn spawn_blocking(rt: &crate::Runtime, _: &Driver, f: Box<dyn Dispatchable + Send>) {
     let _ = rt.pool.dispatch(f);
 }
 
@@ -242,8 +236,7 @@ impl Driver {
                         self.notifier.clear().expect("cannot clear notifier");
                     }
                     _ => {
-                        let batch =
-                            ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
+                        let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
                         let user_data = (user_data & Self::DATA_MASK) as usize;
 
                         let result = entry.result();

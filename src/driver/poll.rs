@@ -177,6 +177,7 @@ impl Driver {
                 super::PollResult::HasTasks => Some(Duration::ZERO),
                 super::PollResult::Ready(val) => return Ok(val),
             };
+            events.clear();
             self.poll.wait(&mut events, timeout)?;
 
             let mut handlers = self.handlers.take().unwrap();
