@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.24] - 2025-05-27
+
+* Detect io-uring setup features
+
 ## [0.1.23] - 2025-05-24
 
 * Tune scheduler events handling
