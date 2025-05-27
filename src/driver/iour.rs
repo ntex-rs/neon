@@ -84,10 +84,15 @@ pub struct Driver {
 
 // returns true if kernel is 6.1 or greater
 fn is_new_kernel() -> bool {
-    IoUring::<SEntry, CEntry>::builder()
+    let res = IoUring::<SEntry, CEntry>::builder()
         .setup_defer_taskrun()
-        .build(1024)
-        .is_ok()
+        .build(1024);
+    if res.is_err() {
+        log::info!("io-uring detect: {:?}", res.err());
+        false
+    } else {
+        true
+    }
 }
 
 impl Driver {
