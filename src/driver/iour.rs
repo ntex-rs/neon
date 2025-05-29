@@ -24,7 +24,6 @@ pub(crate) fn spawn_blocking(rt: &crate::Runtime, _: &Driver, f: Box<dyn Dispatc
 }
 
 pub struct DriverApi {
-    id: usize,
     batch: u64,
     inner: Rc<DriverInner>,
 }
@@ -53,27 +52,15 @@ impl DriverApi {
         let mut sq = unsafe { self.inner.ring.submission_shared() };
         let mut changes = self.inner.changes.borrow_mut();
         if !changes.is_empty() || sq.is_full() {
-            changes.push_back(Default::default());
-            let entry = changes.back_mut().unwrap();
-            f(entry);
+            let mut entry = Default::default();
+            f(&mut entry);
             entry.set_user_data(id as u64 | self.batch);
-            // log::debug!(
-            //     "Submit batch({:?}) id({:?}) entry: {:?}",
-            //     self.id,
-            //     id,
-            //     entry
-            // );
+            changes.push_back(entry);
         } else {
             unsafe {
                 sq.push_inline(|entry| {
                     f(entry);
                     entry.set_user_data(id as u64 | self.batch);
-                    // log::debug!(
-                    //     "Submit inline batch({:?}) id({:?}) entry: {:?}",
-                    //     self.id,
-                    //     id,
-                    //     entry
-                    // );
                 })
                 .expect("Queue size is checked");
             }
@@ -83,7 +70,6 @@ impl DriverApi {
     #[inline]
     /// Attempt to cancel an already issued request.
     pub fn cancel(&self, id: u32) {
-        log::debug!("Cancel op batch({:?}) id: {:?}", self.id, id);
         self.inner.changes.borrow_mut().push_back(
             AsyncCancel::new(id as u64 | self.batch)
                 .build()
@@ -184,7 +170,6 @@ impl Driver {
         let id = self.hid.get();
         let mut handlers = self.handlers.take().unwrap_or_default();
         handlers.push(f(DriverApi {
-            id: id as usize,
             batch: id << Self::BATCH,
             inner: self.inner.clone(),
         }));
@@ -231,8 +216,7 @@ impl Driver {
         if changes.is_empty() {
             false
         } else {
-            log::debug!("Apply changes, {:?}", changes.len());
-
+            // log::debug!("Apply changes, {:?}", changes.len());
             let mut sq = unsafe { ring.submission_shared() };
 
             let num = cmp::min(changes.len(), sq.capacity() - sq.len());

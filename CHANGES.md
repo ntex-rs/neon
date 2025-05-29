@@ -2,7 +2,7 @@
 
 ## [0.1.27] - 2025-05-29
 
-* Use new ntex-io-uring api
+* Use inline ntex-io-uring api
 
 ## [0.1.25] - 2025-05-27
 
