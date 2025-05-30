@@ -212,12 +212,12 @@ impl Driver {
             };
             let more_changes = self.apply_changes(sq);
 
+            sq.sync();
             let result = if more_changes || more_tasks {
                 submitter.submit()
             } else {
                 submitter.submit_and_wait(1)
             };
-            sq.sync();
 
             if let Err(e) = result {
                 match e.raw_os_error() {
