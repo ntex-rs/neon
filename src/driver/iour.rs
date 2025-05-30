@@ -3,7 +3,7 @@ use std::{cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc
 
 use io_uring::cqueue::{self, more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
-use io_uring::squeue::Entry as SEntry;
+use io_uring::squeue::{Entry as SEntry, SubmissionQueue};
 use io_uring::{types::Fd, IoUring, Probe};
 
 use crate::pool::Dispatchable;
@@ -35,11 +35,28 @@ impl DriverApi {
         self.inner.new
     }
 
+    fn submit_inner<F>(&self, f: F)
+    where
+        F: FnOnce(&mut SEntry),
+    {
+        let mut changes = self.inner.changes.borrow_mut();
+        if !changes.is_empty() || self.inner.sq.is_full() {
+            let mut entry = Default::default();
+            f(&mut entry);
+            changes.push_back(entry);
+        } else {
+            unsafe {
+                self.inner.sq.push_inline(f).expect("Queue size is checked");
+            }
+        }
+    }
+
     #[inline]
     /// Submit request to the driver.
     pub fn submit(&self, id: u32, entry: SEntry) {
-        self.submit_inline(id, |en| {
+        self.submit_inner(|en| {
             *en = entry;
+            en.set_user_data(id as u64 | self.batch);
         });
     }
 
@@ -49,32 +66,20 @@ impl DriverApi {
     where
         F: FnOnce(&mut SEntry),
     {
-        let mut sq = unsafe { self.inner.ring.submission_shared() };
-        let mut changes = self.inner.changes.borrow_mut();
-        if !changes.is_empty() || sq.is_full() {
-            let mut entry = Default::default();
-            f(&mut entry);
-            entry.set_user_data(id as u64 | self.batch);
-            changes.push_back(entry);
-        } else {
-            unsafe {
-                sq.push_inline(|entry| {
-                    f(entry);
-                    entry.set_user_data(id as u64 | self.batch);
-                })
-                .expect("Queue size is checked");
-            }
-        }
+        self.submit_inner(|en| {
+            f(en);
+            en.set_user_data(id as u64 | self.batch);
+        });
     }
 
     #[inline]
     /// Attempt to cancel an already issued request.
     pub fn cancel(&self, id: u32) {
-        self.inner.changes.borrow_mut().push_back(
-            AsyncCancel::new(id as u64 | self.batch)
+        self.submit_inner(|en| {
+            *en = AsyncCancel::new(id as u64 | self.batch)
                 .build()
-                .user_data(Driver::CANCEL),
-        );
+                .user_data(Driver::CANCEL);
+        });
     }
 
     /// Get whether a specific io-uring opcode is supported.
@@ -86,16 +91,18 @@ impl DriverApi {
 /// Low-level driver of io-uring.
 pub struct Driver {
     fd: RawFd,
-    notifier: Notifier,
     hid: Cell<u64>,
+    notifier: Notifier,
     handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
     inner: Rc<DriverInner>,
 }
 
 struct DriverInner {
     new: bool,
-    ring: IoUring<SEntry, CEntry>,
     probe: Probe,
+    // SAFETY: sq has refs to inner of ring, ring must be pinned
+    sq: SubmissionQueue<'static, SEntry>,
+    ring: Box<IoUring<SEntry, CEntry>>,
     changes: RefCell<VecDeque<SEntry>>,
 }
 
@@ -109,7 +116,7 @@ impl Driver {
     /// Create io-uring driver
     pub(crate) fn new(capacity: u32) -> io::Result<Self> {
         // Create ring
-        let (new, mut ring) = if let Ok(ring) = IoUring::builder()
+        let (new, ring) = if let Ok(ring) = IoUring::builder()
             .setup_coop_taskrun()
             .setup_single_issuer()
             .setup_defer_taskrun()
@@ -126,23 +133,32 @@ impl Driver {
             (false, ring)
         };
 
+        let ring = Box::new(ring);
         let mut probe = Probe::new();
         ring.submitter().register_probe(&mut probe)?;
 
+        let fd = ring.as_raw_fd();
+        // SAFETY: both "ring" and "sq" are in Rc and have same lifetime
+        // ring is binned as well
+        let sq: SubmissionQueue<'static, SEntry> =
+            unsafe { mem::transmute(ring.submission_shared()) };
+
+        // Remote notifier
         let notifier = Notifier::new()?;
         unsafe {
-            ring.submission()
-                .push(
-                    &PollAdd::new(Fd(notifier.as_raw_fd()), libc::POLLIN as _)
-                        .multi(true)
-                        .build()
-                        .user_data(Self::NOTIFY),
-                )
-                .expect("the squeue sould not be full");
+            sq.push(
+                &PollAdd::new(Fd(notifier.as_raw_fd()), libc::POLLIN as _)
+                    .multi(true)
+                    .build()
+                    .user_data(Self::NOTIFY),
+            )
+            .expect("the squeue sould not be full");
+            sq.sync();
         }
-        let fd = ring.as_raw_fd();
+
         let inner = Rc::new(DriverInner {
             new,
+            sq,
             ring,
             probe,
             changes: RefCell::new(VecDeque::with_capacity(512)),
@@ -182,8 +198,10 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
+        let sq = &self.inner.sq;
         let ring = &self.inner.ring;
         let mut cq = unsafe { ring.completion_shared() };
+        let submitter = ring.submitter();
         loop {
             self.poll_completions(&mut cq);
 
@@ -192,13 +210,15 @@ impl Driver {
                 super::PollResult::HasTasks => true,
                 super::PollResult::Ready(val) => return Ok(val),
             };
-            let more_changes = self.apply_changes(ring);
+            let more_changes = self.apply_changes(sq);
 
             let result = if more_changes || more_tasks {
-                ring.submit()
+                submitter.submit()
             } else {
-                ring.submit_and_wait(1)
+                submitter.submit_and_wait(1)
             };
+            sq.sync();
+
             if let Err(e) = result {
                 match e.raw_os_error() {
                     Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN)
@@ -211,14 +231,11 @@ impl Driver {
         }
     }
 
-    fn apply_changes(&self, ring: &IoUring<SEntry, CEntry>) -> bool {
+    fn apply_changes(&self, sq: &SubmissionQueue<'_, SEntry>) -> bool {
         let mut changes = self.inner.changes.borrow_mut();
         if changes.is_empty() {
             false
         } else {
-            // log::debug!("Apply changes, {:?}", changes.len());
-            let mut sq = unsafe { ring.submission_shared() };
-
             let num = cmp::min(changes.len(), sq.capacity() - sq.len());
             let (s1, s2) = changes.as_slices();
             let s1_num = cmp::min(s1.len(), num);
@@ -230,7 +247,6 @@ impl Driver {
                 unsafe { sq.push_multiple(&s2[0..s2_num]) }.unwrap();
             }
             changes.drain(0..num);
-            sq.sync();
 
             !changes.is_empty()
         }
@@ -240,6 +256,7 @@ impl Driver {
     /// Handle ring completions, forward changes to specific handler
     fn poll_completions(&self, cq: &mut cqueue::CompletionQueue<'_, CEntry>) {
         cq.sync();
+
         if !cq.is_empty() {
             let mut handlers = self.handlers.take().unwrap();
             for entry in cq {
