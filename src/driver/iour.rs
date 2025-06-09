@@ -132,7 +132,6 @@ impl Driver {
             (false, ring)
         };
 
-        let ring = Box::new(ring);
         let mut probe = Probe::new();
         ring.submitter().register_probe(&mut probe)?;
 
