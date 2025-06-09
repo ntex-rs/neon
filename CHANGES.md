@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.30] - 2025-06-09
+
+* Use new submission api for io-uring
+
 ## [0.1.27] - 2025-05-29
 
 * Use inline ntex-io-uring api

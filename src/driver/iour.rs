@@ -157,7 +157,7 @@ impl Driver {
             new,
             ring,
             probe,
-            changes: RefCell::new(VecDeque::with_capacity(512)),
+            changes: RefCell::new(VecDeque::with_capacity(32)),
         });
 
         Ok(Self {
@@ -206,7 +206,7 @@ impl Driver {
                 super::PollResult::HasTasks => true,
                 super::PollResult::Ready(val) => return Ok(val),
             };
-            let more_changes = self.apply_changes(&sq);
+            let more_changes = self.apply_changes(sq);
 
             let result = if more_changes || more_tasks {
                 submitter.submit()
@@ -227,7 +227,7 @@ impl Driver {
         }
     }
 
-    fn apply_changes(&self, sq: &SubmissionQueue<'_, SEntry>) -> bool {
+    fn apply_changes(&self, sq: SubmissionQueue<'_, SEntry>) -> bool {
         let mut changes = self.inner.changes.borrow_mut();
         if changes.is_empty() {
             false
