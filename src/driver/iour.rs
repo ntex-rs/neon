@@ -40,13 +40,14 @@ impl DriverApi {
         F: FnOnce(&mut SEntry),
     {
         let mut changes = self.inner.changes.borrow_mut();
-        if !changes.is_empty() || self.inner.sq.is_full() {
+        let sq = self.inner.ring.submission();
+        if !changes.is_empty() || sq.is_full() {
             let mut entry = Default::default();
             f(&mut entry);
             changes.push_back(entry);
         } else {
             unsafe {
-                self.inner.sq.push_inline(f).expect("Queue size is checked");
+                sq.push_inline(f).expect("Queue size is checked");
             }
         }
     }
@@ -100,8 +101,6 @@ pub struct Driver {
 struct DriverInner {
     new: bool,
     probe: Probe,
-    // SAFETY: sq has refs to inner of ring, ring must be pinned
-    sq: SubmissionQueue<'static, SEntry>,
     ring: Box<IoUring<SEntry, CEntry>>,
     changes: RefCell<VecDeque<SEntry>>,
 }
@@ -140,8 +139,7 @@ impl Driver {
         let fd = ring.as_raw_fd();
         // SAFETY: both "ring" and "sq" are in Rc and have same lifetime
         // ring is binned as well
-        let sq: SubmissionQueue<'static, SEntry> =
-            unsafe { mem::transmute(ring.submission_shared()) };
+        let sq: SubmissionQueue<'_, SEntry> = ring.submission();
 
         // Remote notifier
         let notifier = Notifier::new()?;
@@ -158,7 +156,6 @@ impl Driver {
 
         let inner = Rc::new(DriverInner {
             new,
-            sq,
             ring,
             probe,
             changes: RefCell::new(VecDeque::with_capacity(512)),
@@ -198,8 +195,8 @@ impl Driver {
     where
         F: FnMut() -> super::PollResult<T>,
     {
-        let sq = &self.inner.sq;
         let ring = &self.inner.ring;
+        let sq = ring.submission();
         let mut cq = unsafe { ring.completion_shared() };
         let submitter = ring.submitter();
         loop {
@@ -210,14 +207,14 @@ impl Driver {
                 super::PollResult::HasTasks => true,
                 super::PollResult::Ready(val) => return Ok(val),
             };
-            let more_changes = self.apply_changes(sq);
+            let more_changes = self.apply_changes(&sq);
 
-            sq.sync();
             let result = if more_changes || more_tasks {
                 submitter.submit()
             } else {
                 submitter.submit_and_wait(1)
             };
+            sq.sync();
 
             if let Err(e) = result {
                 match e.raw_os_error() {
@@ -252,12 +249,11 @@ impl Driver {
         }
     }
 
-    #[allow(unstable_name_collisions)]
     /// Handle ring completions, forward changes to specific handler
     fn poll_completions(&self, cq: &mut cqueue::CompletionQueue<'_, CEntry>) {
         cq.sync();
 
-        if !cq.is_empty() {
+        if !cqueue::CompletionQueue::<'_, _>::is_empty(cq) {
             let mut handlers = self.handlers.take().unwrap();
             for entry in cq {
                 let user_data = entry.user_data();
