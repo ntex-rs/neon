@@ -77,6 +77,3 @@ default = []
 io-uring = ["dep:io-uring"]
 io-uring-compat = []
 polling = ["dep:polling"]
-
-[patch.crates-io]
-ntex-io-uring = { path = "../io-uring" }

@@ -101,7 +101,7 @@ pub struct Driver {
 struct DriverInner {
     new: bool,
     probe: Probe,
-    ring: Box<IoUring<SEntry, CEntry>>,
+    ring: IoUring<SEntry, CEntry>,
     changes: RefCell<VecDeque<SEntry>>,
 }
 
