@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.31] - 2025-06-11
+
+* Fix submission sync order
+
 ## [0.1.30] - 2025-06-09
 
 * Use new submission api for io-uring

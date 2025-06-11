@@ -135,14 +135,10 @@ impl Driver {
         let mut probe = Probe::new();
         ring.submitter().register_probe(&mut probe)?;
 
-        let fd = ring.as_raw_fd();
-        // SAFETY: both "ring" and "sq" are in Rc and have same lifetime
-        // ring is binned as well
-        let sq: SubmissionQueue<'_, SEntry> = ring.submission();
-
         // Remote notifier
         let notifier = Notifier::new()?;
         unsafe {
+            let sq = ring.submission();
             sq.push(
                 &PollAdd::new(Fd(notifier.as_raw_fd()), libc::POLLIN as _)
                     .multi(true)
@@ -153,6 +149,7 @@ impl Driver {
             sq.sync();
         }
 
+        let fd = ring.as_raw_fd();
         let inner = Rc::new(DriverInner {
             new,
             ring,
@@ -208,18 +205,21 @@ impl Driver {
             };
             let more_changes = self.apply_changes(sq);
 
+            // squeue has to sync after we apply all changes
+            // otherwise ring wont see any change in submit call
+            sq.sync();
+
             let result = if more_changes || more_tasks {
                 submitter.submit()
             } else {
                 submitter.submit_and_wait(1)
             };
-            sq.sync();
 
             if let Err(e) = result {
                 match e.raw_os_error() {
                     Some(libc::ETIME) | Some(libc::EBUSY) | Some(libc::EAGAIN)
                     | Some(libc::EINTR) => {
-                        log::error!("Ring submit error, {:?}", e);
+                        log::info!("Ring submit interrupted, {:?}", e);
                     }
                     _ => return Err(e),
                 }
@@ -237,10 +237,11 @@ impl Driver {
             let s1_num = cmp::min(s1.len(), num);
             if s1_num > 0 {
                 unsafe { sq.push_multiple(&s1[0..s1_num]) }.unwrap();
-            }
-            let s2_num = cmp::min(s2.len(), num - s1_num);
-            if s2_num > 0 {
-                unsafe { sq.push_multiple(&s2[0..s2_num]) }.unwrap();
+            } else if !s2.is_empty() {
+                let s2_num = cmp::min(s2.len(), num - s1_num);
+                if s2_num > 0 {
+                    unsafe { sq.push_multiple(&s2[0..s2_num]) }.unwrap();
+                }
             }
             changes.drain(0..num);
 
