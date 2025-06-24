@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.33] - 2025-06-25
+
+* Fix Debug impl for Handle
+
 ## [0.1.32] - 2025-06-25
 
 * Refine Handle type

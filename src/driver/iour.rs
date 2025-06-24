@@ -344,7 +344,7 @@ impl AsRawFd for Notifier {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// A notify handle to the driver.
 pub(crate) struct NotifyHandle {
     fd: Arc<OwnedFd>,
