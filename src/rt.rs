@@ -250,6 +250,9 @@ struct RunnableQueue {
     sync_queue: SegQueue<Runnable>,
 }
 
+unsafe impl Send for RunnableQueue {}
+unsafe impl Sync for RunnableQueue {}
+
 impl RunnableQueue {
     fn new(event_interval: usize, driver: NotifyHandle) -> Self {
         Self {
