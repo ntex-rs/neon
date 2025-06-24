@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.32] - 2025-06-25
+
+* Refine Handle type
+
 ## [0.1.31] - 2025-06-11
 
 * Fix submission sync order

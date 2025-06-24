@@ -197,12 +197,20 @@ impl Drop for Runtime {
     }
 }
 
+#[derive(Debug)]
 /// Handle for current runtime
 pub struct Handle {
     queue: Arc<RunnableQueue>,
 }
 
 impl Handle {
+    /// Get handle for current runtime
+    ///
+    /// Panics if runtime is not set
+    pub fn current() -> Handle {
+        Runtime::with_current(|rt| rt.handle())
+    }
+
     /// Wake up runtime
     pub fn notify(&self) -> io::Result<()> {
         self.queue.driver.notify()
@@ -223,6 +231,15 @@ impl Handle {
     }
 }
 
+impl Clone for Handle {
+    fn clone(&self) -> Self {
+        Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct RunnableQueue {
     id: thread::ThreadId,
     idle: Cell<bool>,
