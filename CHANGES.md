@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.35] - 2025-08-14
+
+* Re-submit notifier fd
+
 ## [0.1.34] - 2025-06-25
 
 * Make Handle type Send + Sync

@@ -32,7 +32,7 @@ impl DriverApi {
     #[inline]
     /// Check if kernel ver 6.1 or greater
     pub fn is_new(&self) -> bool {
-        self.inner.new
+        self.inner.flags.get().contains(Flags::NEW)
     }
 
     fn submit_inner<F>(&self, f: F)
@@ -98,9 +98,17 @@ pub struct Driver {
     inner: Rc<DriverInner>,
 }
 
+bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+    struct Flags: u8 {
+        const NEW      = 0b0000_0001;
+        const NOTIFIER = 0b0000_0010;
+    }
+}
+
 struct DriverInner {
-    new: bool,
     probe: Probe,
+    flags: Cell<Flags>,
     ring: IoUring<SEntry, CEntry>,
     changes: RefCell<VecDeque<SEntry>>,
 }
@@ -151,9 +159,9 @@ impl Driver {
 
         let fd = ring.as_raw_fd();
         let inner = Rc::new(DriverInner {
-            new,
             ring,
             probe,
+            flags: Cell::new(if new { Flags::NEW } else { Flags::empty() }),
             changes: RefCell::new(VecDeque::with_capacity(32)),
         });
 
@@ -196,7 +204,7 @@ impl Driver {
         let mut cq = unsafe { ring.completion_shared() };
         let submitter = ring.submitter();
         loop {
-            self.poll_completions(&mut cq);
+            self.poll_completions(&mut cq, &sq);
 
             let more_tasks = match run() {
                 super::PollResult::Pending => false,
@@ -250,7 +258,11 @@ impl Driver {
     }
 
     /// Handle ring completions, forward changes to specific handler
-    fn poll_completions(&self, cq: &mut cqueue::CompletionQueue<'_, CEntry>) {
+    fn poll_completions(
+        &self,
+        cq: &mut cqueue::CompletionQueue<'_, CEntry>,
+        sq: &SubmissionQueue<'_, SEntry>,
+    ) {
         cq.sync();
 
         if !cqueue::CompletionQueue::<'_, _>::is_empty(cq) {
@@ -261,8 +273,23 @@ impl Driver {
                     Self::CANCEL => {}
                     Self::NOTIFY => {
                         let flags = entry.flags();
-                        debug_assert!(more(flags));
                         self.notifier.clear().expect("cannot clear notifier");
+
+                        // re-submit notifier fd
+                        if !more(flags) {
+                            unsafe {
+                                sq.push(
+                                    &PollAdd::new(
+                                        Fd(self.notifier.as_raw_fd()),
+                                        libc::POLLIN as _,
+                                    )
+                                    .multi(true)
+                                    .build()
+                                    .user_data(Self::NOTIFY),
+                                )
+                            }
+                            .expect("the squeue sould not be full");
+                        }
                     }
                     _ => {
                         let batch = ((user_data & Self::BATCH_MASK) >> Self::BATCH) as usize;
