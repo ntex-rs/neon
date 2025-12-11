@@ -23,7 +23,7 @@ pub struct Runtime {
     driver: Driver,
     queue: Arc<RunnableQueue>,
     pub(crate) pool: ThreadPool,
-    values: RefCell<HashMap<TypeId, Box<dyn Any>, fxhash::FxBuildHasher>>,
+    values: RefCell<HashMap<TypeId, Box<dyn Any>, foldhash::fast::RandomState>>,
 }
 
 impl Runtime {

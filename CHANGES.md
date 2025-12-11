@@ -1,5 +1,11 @@
 # Changes
 
+## [0.1.36] - 2025-12-11
+
+* Switch to foldhash
+
+* Use direct syscalls
+
 ## [0.1.35] - 2025-08-14
 
 * Re-submit notifier fd
