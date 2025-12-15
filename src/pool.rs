@@ -1,8 +1,8 @@
 //! A thread pool to perform blocking operations in other threads.
-use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
+use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
 use std::{fmt, thread, time::Duration};
 
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
 /// An error that may be emitted when all worker threads are busy.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

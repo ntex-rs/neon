@@ -12,6 +12,9 @@ pub trait Handler {
 
     /// Operation submission has failed
     fn error(&mut self, id: usize, err: io::Error);
+
+    /// Cleanup before drop
+    fn cleanup(&mut self);
 }
 
 pub(crate) fn spawn_blocking(
@@ -215,6 +218,14 @@ impl Driver {
 impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
         self.poll.as_raw_fd()
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        for mut h in self.handlers.take().unwrap().into_iter() {
+            h.cleanup()
+        }
     }
 }
 

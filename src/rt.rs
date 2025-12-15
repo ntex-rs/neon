@@ -5,7 +5,7 @@ use std::{future::Future, io, os::fd, sync::Arc, thread, time::Duration};
 
 use async_task::{Runnable, Task};
 use crossbeam_queue::SegQueue;
-use swap_buffer_queue::{buffer::ArrayBuffer, error::TryEnqueueError, Queue};
+use swap_buffer_queue::{Queue, buffer::ArrayBuffer, error::TryEnqueueError};
 
 use crate::driver::{Driver, DriverApi, DriverType, Handler, NotifyHandle, PollResult};
 use crate::pool::ThreadPool;
@@ -134,7 +134,7 @@ impl Runtime {
         let schedule = move |runnable| {
             queue.schedule(runnable);
         };
-        let (runnable, task) = async_task::spawn_unchecked(future, schedule);
+        let (runnable, task) = unsafe { async_task::spawn_unchecked(future, schedule) };
         runnable.schedule();
         task
     }

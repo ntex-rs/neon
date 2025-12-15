@@ -1,10 +1,10 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::{cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
 
-use io_uring::cqueue::{self, more, Entry as CEntry};
+use io_uring::cqueue::{self, Entry as CEntry, more};
 use io_uring::opcode::{AsyncCancel, PollAdd};
 use io_uring::squeue::{Entry as SEntry, SubmissionQueue};
-use io_uring::{types::Fd, IoUring, Probe};
+use io_uring::{IoUring, Probe, types::Fd};
 
 use crate::pool::Dispatchable;
 
@@ -16,6 +16,9 @@ pub trait Handler {
 
     /// Operation is canceled
     fn canceled(&mut self, id: usize);
+
+    /// Cleanup before drop
+    fn cleanup(&mut self);
 }
 
 #[inline(always)]
@@ -322,6 +325,14 @@ impl Driver {
 impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
         self.fd
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        for mut h in self.handlers.take().unwrap().into_iter() {
+            h.cleanup()
+        }
     }
 }
 

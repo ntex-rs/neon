@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.0] - 2025-12-15
+
+* Add Handler::cleanup() method
+
 ## [0.1.36] - 2025-12-11
 
 * Switch to foldhash

@@ -8,4 +8,4 @@ pub mod pool;
 mod rt;
 
 pub use async_task::Task;
-pub use rt::{spawn, spawn_blocking, Handle, JoinHandle, Runtime, RuntimeBuilder};
+pub use rt::{Handle, JoinHandle, Runtime, RuntimeBuilder, spawn, spawn_blocking};
