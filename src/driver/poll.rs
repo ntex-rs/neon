@@ -213,19 +213,17 @@ impl Driver {
     pub(crate) fn handle(&self) -> NotifyHandle {
         NotifyHandle::new(self.poll.clone())
     }
+
+    pub(crate) fn clear(&self) {
+        for mut h in self.handlers.take().unwrap().into_iter() {
+            h.cleanup()
+        }
+    }
 }
 
 impl AsRawFd for Driver {
     fn as_raw_fd(&self) -> RawFd {
         self.poll.as_raw_fd()
-    }
-}
-
-impl Drop for Driver {
-    fn drop(&mut self) {
-        for mut h in self.handlers.take().unwrap().into_iter() {
-            h.cleanup()
-        }
     }
 }
 
