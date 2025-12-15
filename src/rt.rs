@@ -194,8 +194,8 @@ impl fd::AsRawFd for Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         CURRENT_RUNTIME.set(self, || {
-            self.driver.clear();
             self.queue.clear();
+            self.driver.clear();
         })
     }
 }
