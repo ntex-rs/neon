@@ -17,6 +17,9 @@ pub trait Handler {
     /// Operation is canceled
     fn canceled(&mut self, id: usize);
 
+    /// Driver turn is completed
+    fn tick(&mut self);
+
     /// Cleanup before drop
     fn cleanup(&mut self);
 }
@@ -97,8 +100,22 @@ pub struct Driver {
     fd: RawFd,
     hid: Cell<u64>,
     notifier: Notifier,
-    handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
+    handlers: Cell<Option<Box<Vec<HandlerItem>>>>,
     inner: Rc<DriverInner>,
+}
+
+struct HandlerItem {
+    hnd: Box<dyn Handler>,
+    modified: bool,
+}
+
+impl HandlerItem {
+    fn tick(&mut self) {
+        if self.modified {
+            self.modified = false;
+            self.hnd.tick();
+        }
+    }
 }
 
 bitflags::bitflags! {
@@ -189,10 +206,13 @@ impl Driver {
     {
         let id = self.hid.get();
         let mut handlers = self.handlers.take().unwrap_or_default();
-        handlers.push(f(DriverApi {
-            batch: id << Self::BATCH,
-            inner: self.inner.clone(),
-        }));
+        handlers.push(HandlerItem {
+            hnd: f(DriverApi {
+                batch: id << Self::BATCH,
+                inner: self.inner.clone(),
+            }),
+            modified: false,
+        });
         self.handlers.set(Some(handlers));
         self.hid.set(id + 1);
     }
@@ -300,17 +320,24 @@ impl Driver {
 
                         let result = entry.result();
                         if result == -libc::ECANCELED {
-                            handlers[batch].canceled(user_data);
+                            handlers[batch].modified = true;
+                            handlers[batch].hnd.canceled(user_data);
                         } else {
                             let result = if result < 0 {
                                 Err(io::Error::from_raw_os_error(-result))
                             } else {
                                 Ok(result as _)
                             };
-                            handlers[batch].completed(user_data, entry.flags(), result);
+                            handlers[batch].modified = true;
+                            handlers[batch]
+                                .hnd
+                                .completed(user_data, entry.flags(), result);
                         }
                     }
                 }
+            }
+            for h in handlers.iter_mut() {
+                h.tick();
             }
             self.handlers.set(Some(handlers));
         }
@@ -323,7 +350,7 @@ impl Driver {
 
     pub(crate) fn clear(&self) {
         for mut h in self.handlers.take().unwrap().into_iter() {
-            h.cleanup()
+            h.hnd.cleanup()
         }
     }
 }
