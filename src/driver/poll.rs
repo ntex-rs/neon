@@ -111,6 +111,7 @@ pub struct Driver {
     capacity: usize,
     changes: Rc<UnsafeCell<VecDeque<Change>>>,
     hid: Cell<u64>,
+    #[allow(clippy::box_collection)]
     handlers: Cell<Option<Box<Vec<HandlerItem>>>>,
 }
 

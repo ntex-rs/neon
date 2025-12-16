@@ -1,10 +1,10 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::{cell::Cell, cell::RefCell, cmp, collections::VecDeque, io, mem, rc::Rc, sync::Arc};
 
-use io_uring::cqueue::{self, Entry as CEntry, more};
+use io_uring::cqueue::{self, more, Entry as CEntry};
 use io_uring::opcode::{AsyncCancel, PollAdd};
 use io_uring::squeue::{Entry as SEntry, SubmissionQueue};
-use io_uring::{IoUring, Probe, types::Fd};
+use io_uring::{types::Fd, IoUring, Probe};
 
 use crate::pool::Dispatchable;
 
@@ -100,6 +100,7 @@ pub struct Driver {
     fd: RawFd,
     hid: Cell<u64>,
     notifier: Notifier,
+    #[allow(clippy::box_collection)]
     handlers: Cell<Option<Box<Vec<HandlerItem>>>>,
     inner: Rc<DriverInner>,
 }
