@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.2] - 2025-12-16
+
+* Add Handler::tick() method, indicates one turn of reactor
+
 ## [0.2.1] - 2025-12-15
 
 * Clear driver within runtime
