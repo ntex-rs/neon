@@ -13,6 +13,9 @@ pub trait Handler {
     /// Operation submission has failed
     fn error(&mut self, id: usize, err: io::Error);
 
+    /// Driver turn is completed
+    fn tick(&mut self);
+
     /// Cleanup before drop
     fn cleanup(&mut self);
 }
@@ -108,7 +111,22 @@ pub struct Driver {
     capacity: usize,
     changes: Rc<UnsafeCell<VecDeque<Change>>>,
     hid: Cell<u64>,
-    handlers: Cell<Option<Box<Vec<Box<dyn Handler>>>>>,
+    #[allow(clippy::box_collection)]
+    handlers: Cell<Option<Box<Vec<HandlerItem>>>>,
+}
+
+struct HandlerItem {
+    hnd: Box<dyn Handler>,
+    modified: bool,
+}
+
+impl HandlerItem {
+    fn tick(&mut self) {
+        if self.modified {
+            self.modified = false;
+            self.hnd.tick();
+        }
+    }
 }
 
 impl Driver {
@@ -150,7 +168,10 @@ impl Driver {
             poll: self.poll.clone(),
             changes: self.changes.clone(),
         };
-        handlers.push(f(api));
+        handlers.push(HandlerItem {
+            hnd: f(api),
+            modified: false,
+        });
         self.hid.set(id + 1);
         self.handlers.set(Some(handlers));
     }
@@ -187,21 +208,27 @@ impl Driver {
             for event in events.iter() {
                 let key = event.key as u64;
                 let batch = ((key & Self::BATCH_MASK) >> Self::BATCH) as usize;
-                handlers[batch].event((key & Self::DATA_MASK) as usize, event)
+                handlers[batch].modified = true;
+                handlers[batch]
+                    .hnd
+                    .event((key & Self::DATA_MASK) as usize, event)
             }
             self.apply_changes(&mut handlers);
+            for h in handlers.iter_mut() {
+                h.tick();
+            }
             self.handlers.set(Some(handlers));
         }
     }
 
-    fn apply_changes(&self, handlers: &mut [Box<dyn Handler>]) {
+    fn apply_changes(&self, handlers: &mut [HandlerItem]) {
         while let Some(op) = unsafe { (*self.changes.get()).pop_front() } {
             match op {
                 Change::Error {
                     batch,
                     user_data,
                     error,
-                } => handlers[batch].error(user_data as usize, error),
+                } => handlers[batch].hnd.error(user_data as usize, error),
                 Change::Blocking(f) => {
                     let _ = crate::Runtime::with_current(|rt| rt.pool.dispatch(f));
                 }
@@ -216,7 +243,7 @@ impl Driver {
 
     pub(crate) fn clear(&self) {
         for mut h in self.handlers.take().unwrap().into_iter() {
-            h.cleanup()
+            h.hnd.cleanup()
         }
     }
 }
